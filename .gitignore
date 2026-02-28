@@ -1,0 +1,21 @@
+# Credentials & secrets
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Runtime data (cookies, saved sessions, job store)
+data/
+
+# Claude Code project settings
+.claude/
+
+# macOS
+.DS_Store
