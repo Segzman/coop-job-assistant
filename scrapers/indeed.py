@@ -96,6 +96,13 @@ class IndeedScraper(BaseScraper):
                 window.chrome = { runtime: {} };
             """)
 
+            # Safari-imported cookies (if python main.py import-cookies ran)
+            from storage.safari_cookies import matching
+            imported = matching("indeed")
+            if imported:
+                await context.add_cookies(imported)
+                print(f"[indeed] Injected {len(imported)} Safari cookie(s).")
+
             page = context.pages[0] if context.pages else await context.new_page()
 
             # Step 1: warm up on the homepage

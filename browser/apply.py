@@ -12,17 +12,21 @@ Dual-tab support:
   - The external tab is brought to the foreground so it is the first thing
     the user sees.
 
-CRITICAL GUARANTEE: This module NEVER clicks Submit, Apply, Send, or any
-other form submission button. The user is always in full control.
+DEFAULT GUARANTEE: This module NEVER clicks Submit, Apply, Send, or any
+other form submission button — UNLESS toggles.auto_submit is enabled in
+config.yaml (and dry_run is off). Even then it only submits when its
+sanity checks pass; any doubt = no click, user stays in control.
 """
 from __future__ import annotations
 import json
 import os
+import random
 import re
 from pathlib import Path
 
 from playwright.async_api import async_playwright, Page, BrowserContext
 
+import config
 from models.job import Job
 
 # ---------------------------------------------------------------------------
@@ -103,12 +107,15 @@ _EXTERNAL_DOMAINS = re.compile(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-async def open_and_prefill(job: Job) -> None:
+async def open_and_prefill(job: Job, resume_path: Path | None = None) -> None:
     """
     Opens the job application URL(s) in a maximised browser.
     - If job.external_url is set, opens BOTH pages (two tabs).
     - Pre-fills known fields on every tab opened.
-    - Waits until the user closes ALL tabs / the browser window.
+    - Attaches `resume_path` (per-job tailored PDF) when given, else the
+      .env master resume.
+    - With toggles.auto_submit ON (and dry_run off), attempts a
+      sanity-checked auto-submit; otherwise waits for the user.
     """
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -161,7 +168,8 @@ async def open_and_prefill(job: Job) -> None:
 
         await sheridan_page.wait_for_timeout(2500)
         s_filled = await _prefill_text_fields(sheridan_page)
-        await _attach_resume(sheridan_page)
+        await _attach_resume(sheridan_page, resume_path)
+        await _maybe_autosubmit(sheridan_page, s_filled, "Sheridan")
 
         # ── Tab 2: external application form ───────────────────────────────
         ext_url = job.external_url or detected_external
@@ -178,10 +186,11 @@ async def open_and_prefill(job: Job) -> None:
             # Workday-specific fill first, then generic
             wd_filled = await _prefill_workday(ext_page)
             gen_filled = await _prefill_text_fields(ext_page)
-            await _attach_resume(ext_page)
+            await _attach_resume(ext_page, resume_path)
 
             total_ext = wd_filled + gen_filled
             print(f"[apply] External form: pre-filled {total_ext} field(s).")
+            await _maybe_autosubmit(ext_page, total_ext, "External")
 
             # Bring the external tab to front so user sees it immediately
             await ext_page.bring_to_front()
@@ -313,12 +322,13 @@ async def _prefill_text_fields(page: Page) -> int:
 # Resume attachment
 # ---------------------------------------------------------------------------
 
-async def _attach_resume(page: Page) -> bool:
+async def _attach_resume(page: Page, resume_path: str | Path | None = None) -> bool:
     """
     Attempts to set the resume file on a standard <input type="file"> element.
+    Uses the passed-in path (per-job tailored PDF) or falls back to .env.
     Returns True if attached, False otherwise.
     """
-    resume_path = PROFILE["resume_path"]
+    resume_path = resume_path or PROFILE["resume_path"]
     if not resume_path:
         return False
 
@@ -342,6 +352,77 @@ async def _attach_resume(page: Page) -> bool:
             print(f"[apply] Resume attach error: {e}")
 
     return False
+
+
+# ---------------------------------------------------------------------------
+# Sanity-gated auto-submit (only when toggles.auto_submit is ON)
+# ---------------------------------------------------------------------------
+
+_SUBMIT_SELECTORS = [
+    "button[type='submit']",
+    "input[type='submit']",
+    "button:has-text('Submit')",
+    "button:has-text('Submit Application')",
+    "button[data-automation-id='submitButton']",          # Workday
+    "button[aria-label*='Submit']",
+]
+
+# Buttons that LOOK like submit but must never be auto-clicked.
+_DENYLIST_TEXT = re.compile(
+    r"save|draft|back|cancel|previous|next|sign|upload|continue",
+    re.IGNORECASE,
+)
+
+
+async def _maybe_autosubmit(page: Page, fields_filled: int, label: str) -> bool:
+    """
+    Auto-submit only if ALL of these hold:
+      - toggles.auto_submit enabled AND dry_run off
+      - at least 3 profile fields were pre-filled (form actually engaged)
+      - exactly one plausible submit button is visible and not denylisted
+    Any ambiguity → no click. Returns True if submitted.
+    """
+    if not config.enabled("auto_submit") or config.dry_run():
+        return False
+
+    if fields_filled < 3:
+        print(f"[auto] {label}: only {fields_filled} field(s) filled — "
+              f"NOT submitting (sanity check failed).")
+        return False
+
+    candidates = []
+    for sel in _SUBMIT_SELECTORS:
+        try:
+            for el in await page.query_selector_all(sel):
+                if not await el.is_visible():
+                    continue
+                if await el.is_disabled():
+                    continue
+                text = ((await el.inner_text()) or
+                        (await el.get_attribute("value") or "") or "").strip()
+                if _DENYLIST_TEXT.search(text):
+                    continue
+                candidates.append((el, text))
+        except Exception:
+            continue
+
+    if len(candidates) != 1:
+        print(f"[auto] {label}: {len(candidates)} submit candidate(s) — "
+              f"NOT submitting (ambiguous).")
+        return False
+
+    el, text = candidates[0]
+    print(f"[auto] {label}: sanity checks passed — clicking '{text}'...")
+    try:
+        await page.wait_for_timeout(random.uniform(1500, 3000))
+        await el.click()
+        await page.wait_for_timeout(4000)
+        print(f"[auto] {label}: clicked submit. VERIFY the confirmation "
+              f"page before closing.")
+        return True
+    except Exception as e:
+        print(f"[auto] {label}: submit click failed ({e}).")
+        return False
 
 
 # ---------------------------------------------------------------------------
