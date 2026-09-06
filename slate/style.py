@@ -74,6 +74,19 @@ def _gather_writing() -> str:
          if p.is_file() and p.suffix.lower() in (".md", ".txt")
          and p.name != STYLE_PATH.name],
     )
+    # Professional voice first: peer reviews, cover letters, pitches —
+    # the registers that matter for resumes/outreach — then essays,
+    # then technical answers.
+    def _rank(p: Path) -> int:
+        n = p.name.lower()
+        if "posts" in n or "pitch" in n:
+            return 0
+        if "cover" in n:
+            return 1
+        if "essay" in n or "paper" in n or "analysis" in n or "reflection" in n:
+            return 2
+        return 3
+    paths.sort(key=_rank)
     for path in paths:
         try:
             text = path.read_text().strip()
