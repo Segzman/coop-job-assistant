@@ -22,7 +22,8 @@ import config
 ROOT = Path(__file__).parent.parent
 WRITING_DIR = ROOT / "data" / "writing"
 STYLE_PATH = WRITING_DIR / "style.md"
-MAX_CHARS = 12000
+MAX_CHARS = 24000
+PER_FILE_CHARS = 6000
 
 SYSTEM_PROMPT = """\
 You are a writing-style analyst. You will receive samples of one student's
@@ -79,7 +80,9 @@ def _gather_writing() -> str:
         except OSError:
             continue
         if text:
-            chunks.append(f"\n\n===== {path.name} =====\n{text}")
+            # Per-file sample so every source (essays AND technical
+            # answers) shapes the profile, not just the first files.
+            chunks.append(f"\n\n===== {path.name} =====\n{text[:PER_FILE_CHARS]}")
     return "".join(chunks)[:MAX_CHARS]
 
 

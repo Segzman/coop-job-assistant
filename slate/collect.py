@@ -55,6 +55,41 @@ ANCHORS_JS = """(() => JSON.stringify(
       href: a.href || "",
     }))))()"""
 
+# Course cards live inside Brightspace web-component shadow DOM
+# (d2l-my-courses-v2 → enrollment cards). Plain querySelectorAll sees
+# nothing — drill shadow roots for /d2l/home/<ou> links.
+COURSES_JS = """(() => {
+  const courses = [];
+  const cards = [];
+  const gather = (root) => {
+    root.querySelectorAll('*').forEach(e => {
+      if (/enrollment-card/.test(e.tagName.toLowerCase())) cards.push(e);
+      if (e.shadowRoot) gather(e.shadowRoot);
+    });
+  };
+  gather(document);
+  cards.forEach(c => {
+    const found = [];
+    const walk = (root) => {
+      root.querySelectorAll('a[href]').forEach(a => {
+        const h = a.getAttribute('href') || '';
+        const m = h.match(/\\/d2l\\/home\\/(\\d+)/);
+        if (m) found.push({
+          ou: m[1],
+          name: (a.innerText || a.textContent || '')
+            .replace(/\\s+/g, ' ').trim().slice(0, 120),
+        });
+      });
+      root.querySelectorAll('*').forEach(e => {
+        if (e.shadowRoot) walk(e.shadowRoot);
+      });
+    };
+    walk(c.shadowRoot || c);
+    if (found.length) courses.push(found[0]);
+  });
+  return JSON.stringify(courses);
+})()"""
+
 # Candidate discussion-post containers (several D2L layouts).
 POSTS_JS = """(() => JSON.stringify(
   [...document.querySelectorAll(
@@ -76,6 +111,14 @@ SUBMISSION_TEXT_JS = """(() => JSON.stringify(
   )].slice(0, 20)
     .map(el => (el.innerText || "").trim().slice(0, 6000))
     .filter(t => t)))()"""
+
+
+def _pause(msg: str) -> None:
+    """Enter-prompt that degrades gracefully without a tty (EOF → continue)."""
+    try:
+        input(msg)
+    except (EOFError, KeyboardInterrupt):
+        print("[slate] (no terminal — continuing)")
 
 
 def _click_href_js(href: str) -> str:
@@ -181,14 +224,14 @@ async def collect() -> None:
             except RuntimeError:
                 url = ""
             if not _is_logged_in(url):
-                input("[slate] Still on a login page. Finish signing in "
-                      "in the Safari window, then press Enter... ")
+                _pause("[slate] Still on a login page. Finish signing in "
+                       "in the Safari window, then press Enter... ")
 
         courses = await _list_courses(col, wid)
         if not courses:
-            input("[slate] No courses found. In the Safari window open "
-                  "your course list (e.g. waffle/Course Selector), "
-                  "then press Enter... ")
+            _pause("[slate] No courses found. In the Safari window open "
+                   "your course list (e.g. waffle/Course Selector), "
+                   "then press Enter... ")
             courses = await _list_courses(col, wid)
         print(f"[slate] {len(courses)} course(s) found.")
         if not courses:
@@ -210,8 +253,8 @@ async def collect() -> None:
         print(f"\n[slate] Done. Manifest: {MANIFEST_PATH} "
               f"({len(manifest)} item(s))")
     finally:
-        input("\n[slate] Done collecting. Press Enter to close Safari "
-              "window... ")
+        _pause("\n[slate] Done collecting. Press Enter to close Safari "
+               "window... ")
         await asyncio.to_thread(safari.close_window, wid)
 
 
@@ -304,11 +347,26 @@ async def _anchors(col: SlateCollector, wid: int) -> list[dict]:
 
 
 async def _list_courses(col: SlateCollector, wid: int) -> list[dict]:
-    """Enrolled courses, discovered from hub-page anchors."""
-    await asyncio.to_thread(safari.goto, wid, SLATE_ROOT)
-    await col.human_delay(2500, 4000)
-    links = await _anchors(col, wid)
+    """Enrolled courses: shadow-DOM enrollment cards, anchor fallback."""
+    await asyncio.to_thread(safari.goto, wid, SLATE_ROOT + "/d2l/home")
+    await col.human_delay(4000, 6000)  # widget renders async
+    try:
+        out = await asyncio.to_thread(safari.js, wid, COURSES_JS)
+        found = json.loads(out)
+    except (RuntimeError, json.JSONDecodeError):
+        found = []
     seen: dict[str, dict] = {}
+    for c in found:
+        ou = (c.get("ou") or "").strip()
+        if ou and ou not in seen:
+            seen[ou] = {
+                "name": (c.get("name") or f"course-{ou}").strip(),
+                "url": f"{SLATE_ROOT}/d2l/home/{ou}",
+            }
+    if seen:
+        return list(seen.values())
+    # Fallback: plain anchors (older hub markup)
+    links = await _anchors(col, wid)
     for link in links:
         href = link["href"]
         if "/d2l/home/" not in href and "/d2l/le/content/" not in href:
