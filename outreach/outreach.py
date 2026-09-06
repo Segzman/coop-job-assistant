@@ -10,7 +10,6 @@ autosend(): actually sends via LinkedIn messaging. Gated behind
             of each session.
 """
 from __future__ import annotations
-import asyncio
 import json
 import random
 import urllib.request
@@ -105,6 +104,7 @@ def drafts(jobs: dict[str, "Job"], force: bool = False) -> int:
 
 
 def autosend() -> None:
+    """Send queued drafts through real Safari (native stack, no Playwright)."""
     if not config.enabled("linkedin_autosend"):
         print("[outreach] linkedin_autosend is OFF — enable it in config.yaml")
         return
@@ -113,8 +113,8 @@ def autosend() -> None:
               "Set toggles.dry_run=false to go live.")
         return
 
-    from scrapers.linkedin import PROFILE_DIR
-    from playwright.async_api import async_playwright
+    import time
+    from browser import safari_bridge as safari
 
     cap = int(config.limit("autosend_daily_cap"))
     remaining = cap - sent_today()
@@ -137,80 +137,92 @@ def autosend() -> None:
         print("[outreach] Cancelled.")
         return
 
-    async def _run():
-        async with async_playwright() as p:
-            PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-            context = await p.chromium.launch_persistent_context(
-                str(PROFILE_DIR), headless=False,
-                args=["--disable-blink-features=AutomationControlled"],
-                viewport=None, locale="en-CA",
-                timezone_id="America/Toronto",
-            )
-            await context.add_init_script(
-                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
-            )
-            from storage.safari_cookies import matching
-            imported = matching("linkedin")
-            if imported:
-                await context.add_cookies(imported)
-                print(f"[outreach] Injected {len(imported)} Safari cookie(s).")
+    wid = safari.open_window("https://www.linkedin.com/feed/")
+    time.sleep(4)
+    try:
+        try:
+            url = safari.current_url(wid)
+        except RuntimeError:
+            url = ""
+        if "/login" in url or "checkpoint" in url:
+            input("[outreach] LinkedIn wants login. Sign in in the Safari "
+                  "window, then press Enter... ")
 
-            page = context.pages[0] if context.pages else await context.new_page()
+        sent = 0
+        for r_id, r in queue[:remaining]:
+            lo = int(config.limit("autosend_min_delay_min"))
+            hi = int(config.limit("autosend_max_delay_min"))
+            if sent > 0:
+                wait_min = random.uniform(lo, hi)
+                print(f"[outreach] Waiting {wait_min:.1f} min "
+                      f"(human pacing)...")
+                time.sleep(wait_min * 60)
 
-            sent = 0
-            for r_id, r in queue[:remaining]:
-                lo = int(config.limit("autosend_min_delay_min"))
-                hi = int(config.limit("autosend_max_delay_min"))
-                if sent > 0:
-                    wait_min = random.uniform(lo, hi)
-                    print(f"[outreach] Waiting {wait_min:.1f} min "
-                          f"(human pacing)...")
-                    await asyncio.sleep(wait_min * 60)
-
-                ok = await _send_one(page, r)
-                if ok:
-                    mark_sent(r_id)
-                    sent += 1
-                    print(f"[outreach] SENT #{sent}: {r['name']}")
-
-            input("\n[outreach] Session done. Press Enter to close browser... ")
-            await context.close()
-
-    asyncio.run(_run())
+            if _send_one(wid, r):
+                mark_sent(r_id)
+                sent += 1
+                print(f"[outreach] SENT #{sent}: {r['name']}")
+    finally:
+        input("\n[outreach] Session done. Press Enter to close Safari... ")
+        safari.close_window(wid)
 
 
-async def _send_one(page, r: dict) -> bool:
+def _send_one(wid: int, r: dict) -> bool:
     """
-    Opens profile → Message → fills → sends.
+    Opens profile → Message → fills → sends, all via Safari JS.
     Any failure aborts THAT message only (never retries blindly).
     """
+    import time
+    from browser import safari_bridge as safari
+
+    draft_js = json.dumps(r["draft"])
     try:
-        await page.goto(r["profile_url"], wait_until="domcontentloaded",
-                        timeout=45000)
-        await asyncio.sleep(random.uniform(3, 6))
+        safari.goto(wid, r["profile_url"])
+        time.sleep(random.uniform(4, 7))
 
-        msg_btn = page.locator(
-            "main button:has-text('Message'), "
-            "button[aria-label*='Message']"
-        ).first
-        await msg_btn.click(timeout=10000)
-        await asyncio.sleep(random.uniform(2, 4))
+        msg_clicked = safari.js(wid, """(() => {
+          const b = [...document.querySelectorAll("main button, button")]
+            .find(e => /message/i.test(e.innerText || "") ||
+              /message/i.test(e.getAttribute("aria-label") || ""));
+          if (!b || b.offsetParent === null) return "miss";
+          b.click();
+          return "clicked";
+        })()""").strip().strip('"')
+        if msg_clicked != "clicked":
+            print(f"[outreach] No Message button for {r['name']}.")
+            return False
+        time.sleep(random.uniform(2, 4))
 
-        box = page.locator(
-            "div.msg-form__contenteditable[role='textbox'], "
-            "[contenteditable='true'].msg-form__contenteditable"
-        ).first
-        await box.click(timeout=10000)
-        await box.type(r["draft"], delay=random.randint(40, 90))
-        await asyncio.sleep(random.uniform(2, 4))
+        filled = safari.js(wid, f"""(() => {{
+          const box = document.querySelector(
+            "div.msg-form__contenteditable[role='textbox']");
+          if (!box) return "miss";
+          box.focus();
+          document.execCommand("selectAll", false, null);
+          document.execCommand("insertText", false, {draft_js});
+          box.dispatchEvent(new Event("input", {{bubbles: true}}));
+          return "done";
+        }})()""").strip().strip('"')
+        if filled != "done":
+            print(f"[outreach] Message box never opened for {r['name']}.")
+            return False
+        time.sleep(random.uniform(2, 4))
 
-        send_btn = page.locator(
-            "button.msg-form__send-button:not([disabled]), "
-            "button[aria-label*='Send now']"
-        ).first
-        await send_btn.click(timeout=10000)
-        await asyncio.sleep(random.uniform(3, 5))
+        sent = safari.js(wid, """(() => {
+          const b = document.querySelector(
+            "button.msg-form__send-button:not([disabled])");
+          if (!b) return "miss";
+          b.click();
+          return "sent";
+        })()""").strip().strip('"')
+        if sent != "sent":
+            print(f"[outreach] Send button not ready for {r['name']}.")
+            return False
+        time.sleep(random.uniform(3, 5))
         return True
+    except RuntimeError:
+        print(f"[outreach] Safari window closed during {r['name']}.")
+        return False
     except Exception as e:
         print(f"[outreach] FAILED for {r['name']}: {e} "
               f"(not retried — handle manually)")

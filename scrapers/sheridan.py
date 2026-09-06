@@ -1,5 +1,5 @@
 """
-Sheridan Works co-op job scraper.
+Sheridan Works co-op job scraper — real Safari via AppleScript.
 
 Login flow (Shibboleth → Microsoft SSO):
   1. Navigate to coopJobs.htm → redirected to notLoggedIn.htm
@@ -9,40 +9,63 @@ Login flow (Shibboleth → Microsoft SSO):
   5. "Stay signed in?" → Yes
   6. Redirected back to Sheridan Works
 
-Session cookies are saved after login so subsequent runs skip re-authentication.
+No cookie files: Safari keeps the session itself between runs, so a
+valid login is simply still there next time.
 
 Job table structure (verified against live page 2026-02-26):
   Table: #postingsTable
   Rows:  tr.searchResult  (tbody)
   Cells: [0]=Shortlist/View  [2]=Term  [3]=PostingID  [4]=Title
-         [5]=Organization    [11]=City  [12]=App Deadline
+          [5]=Organization    [11]=City  [12]=App Deadline
   Row id attr: "posting56372" → posting ID 56372
 """
 from __future__ import annotations
+
+import asyncio
 import json
 import os
 import re
 from datetime import datetime
-from pathlib import Path
 
-from playwright.async_api import async_playwright, Page, ElementHandle
-
+from browser import safari_bridge as safari
 from models.job import Job, make_job_id
 from scrapers.base import BaseScraper
 
-SHERIDAN_BASE   = "https://sheridanworks.sheridancollege.ca"
-COOP_JOBS_URL   = f"{SHERIDAN_BASE}/myAccount/co-op/coopJobs.htm"
-LOGIN_PAGE_URL  = f"{SHERIDAN_BASE}/login.htm"
-STUDENT_SSO_URL = (
-    f"{SHERIDAN_BASE}/Shibboleth.sso/Login"
-    "?entityID=https://sts.windows.net/465ac757-2131-4711-b9a3-d8278b5c0b14/"
-    f"&target={SHERIDAN_BASE}/secure/ssoStudent.htm"
-)
-COOKIES_PATH  = Path(__file__).parent.parent / "data" / "sheridan_cookies.json"
+SHERIDAN_BASE = "https://sheridanworks.sheridancollege.ca"
+COOP_JOBS_URL = f"{SHERIDAN_BASE}/myAccount/co-op/coopJobs.htm"
+LOGIN_PAGE_URL = f"{SHERIDAN_BASE}/login.htm"
 MS_LOGIN_HOST = "login.microsoftonline.com"
 
-# How long to wait (ms) for the AJAX job table to render after clicking search
-JOBS_LOAD_TIMEOUT = 12000
+# How long to wait (s) for the AJAX job table to render after search
+JOBS_LOAD_TIMEOUT = 15
+
+ROWS_JS = """(() => JSON.stringify(
+  [...document.querySelectorAll("#postingsTable tbody tr.searchResult")]
+    .map(tr => ({
+      rowId: tr.getAttribute("id") || "",
+      cells: [...tr.querySelectorAll("td")].map(td => td.innerText.trim()),
+    }))))()"""
+
+ROWS_PRESENT_JS = """(() => document.querySelectorAll(
+  "#postingsTable tbody tr.searchResult").length > 0
+  ? "yes" : "no")()"""
+
+NEXT_JS = """(() => {
+  const n = [...document.querySelectorAll(".pagination a")]
+    .find(a => /^(next|>)$/i.test(a.innerText.trim())
+      && !a.closest("li.disabled"));
+  if (!n) return "none";
+  n.click();
+  return "clicked";
+})()"""
+
+TRIGGER_SEARCH_JS = """(() => {
+  const a = document.querySelector(
+    '.stat-table a[onclick*="displayQuickSearch"]');
+  if (!a) return "miss";
+  a.click();
+  return "clicked";
+})()"""
 
 
 class SheridanScraper(BaseScraper):
@@ -51,54 +74,54 @@ class SheridanScraper(BaseScraper):
         self.username = os.environ["SHERIDAN_USERNAME"]
         self.password = os.environ["SHERIDAN_PASSWORD"]
 
+    async def _url(self, wid: int) -> str:
+        try:
+            return await asyncio.to_thread(safari.current_url, wid)
+        except RuntimeError:
+            return ""
+
+    async def _poll_js(self, wid: int, script: str, expect: str,
+                       timeout_s: int) -> bool:
+        for _ in range(timeout_s * 2):
+            try:
+                out = (await asyncio.to_thread(safari.js, wid, script)
+                       ).strip().strip('"')
+            except RuntimeError:
+                return False
+            if out == expect:
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
+    async def _wait_url(self, wid: int, needle: str, timeout_s: int) -> bool:
+        for _ in range(timeout_s * 2):
+            if needle in await self._url(wid):
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
     async def scrape(self) -> list[Job]:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=False,
-                slow_mo=50,
-                args=["--start-maximized"],
-            )
-            context = await browser.new_context(
-                no_viewport=True,
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/122.0.0.0 Safari/537.36"
-                ),
-            )
+        wid = await asyncio.to_thread(safari.open_window, COOP_JOBS_URL)
+        print("[sheridan] Safari window opened.")
+        try:
+            await self.human_delay(2500, 4000)
 
-            if COOKIES_PATH.exists():
-                cookies = json.loads(COOKIES_PATH.read_text())
-                await context.add_cookies(cookies)
-                print("[sheridan] Loaded saved session cookies.")
-
-            page = await context.new_page()
-            await page.goto(COOP_JOBS_URL, wait_until="domcontentloaded")
-            await self.human_delay(1500, 2500)
-
-            current_url = page.url
-            if self._is_logged_in(current_url):
+            if self._is_logged_in(await self._url(wid)):
                 print("[sheridan] Session still valid — skipping login.")
             else:
-                print(f"[sheridan] Not logged in ({current_url}). Starting SSO login...")
-                await self._do_full_sso_login(page)
+                print("[sheridan] Not logged in. Starting SSO login...")
+                await self._do_full_sso_login(wid)
 
-            # Save updated cookies
-            COOKIES_PATH.parent.mkdir(exist_ok=True)
-            COOKIES_PATH.write_text(json.dumps(await context.cookies(), indent=2))
-            print("[sheridan] Session cookies saved.")
-
-            # Navigate to the jobs page if needed
-            if "coopJobs" not in page.url:
-                await page.goto(COOP_JOBS_URL, wait_until="domcontentloaded")
+            if "coopJobs" not in await self._url(wid):
+                await asyncio.to_thread(safari.goto, wid, COOP_JOBS_URL)
                 await self.human_delay(1500, 2500)
-                if not self._is_logged_in(page.url):
-                    print(f"[sheridan] ERROR: Still not logged in. URL: {page.url}")
-                    await browser.close()
+                if not self._is_logged_in(await self._url(wid)):
+                    print("[sheridan] ERROR: Still not logged in.")
                     return []
 
-            jobs = await self._scrape_job_listings(page)
-            await browser.close()
+            jobs = await self._scrape_job_listings(wid)
+        finally:
+            await asyncio.to_thread(safari.close_window, wid)
 
         print(f"[sheridan] Collected {len(jobs)} jobs.")
         return jobs
@@ -108,91 +131,103 @@ class SheridanScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     def _is_logged_in(self, url: str) -> bool:
-        blocked = ["notLoggedIn", "login.htm", "login/", MS_LOGIN_HOST, "Shibboleth"]
+        blocked = ["notLoggedIn", "login.htm", "login/", MS_LOGIN_HOST,
+                   "Shibboleth"]
         return (SHERIDAN_BASE in url) and not any(b in url for b in blocked)
 
-    async def _do_full_sso_login(self, page: Page) -> None:
+    async def _do_full_sso_login(self, wid: int) -> None:
         """Shibboleth → Microsoft SSO login. Handles MFA automatically."""
         print("[sheridan] Opening login page...")
-        await page.goto(LOGIN_PAGE_URL, wait_until="domcontentloaded")
-        await self.human_delay(1000, 1800)
+        await asyncio.to_thread(safari.goto, wid, LOGIN_PAGE_URL)
+        await self.human_delay(1500, 2500)
 
         # Click "STUDENT / ALUMNI LOGIN"
-        student_btn = page.locator("a:text-matches('STUDENT', 'i')")
-        await student_btn.first.wait_for(timeout=8000)
-        await student_btn.first.click()
-        print("[sheridan] Clicked student SSO button, waiting for Microsoft login...")
-        await page.wait_for_url(f"**{MS_LOGIN_HOST}**", timeout=20000)
-        await self.human_delay(1200, 2000)
+        clicked = await self.safari_click(wid, [
+            "a[href*='STUDENT' i]", "a[href*='student']",
+        ])
+        if not clicked:
+            # Fallback: click by visible text
+            await asyncio.to_thread(safari.js, wid, """(() => {
+              const a = [...document.querySelectorAll("a")]
+                .find(e => /student/i.test(e.innerText));
+              if (a) { a.click(); return "clicked"; }
+              return "miss";
+            })()""")
+        print("[sheridan] Clicked student SSO button, waiting for Microsoft...")
+        await self._wait_url(wid, MS_LOGIN_HOST, 20)
+        await self.human_delay(1500, 2500)
 
         # Microsoft email
         print("[sheridan] Step 1/3 — entering email...")
-        email_sel = "input[name='loginfmt'], input[type='email']"
-        await page.wait_for_selector(email_sel, timeout=15000)
-        await page.wait_for_timeout(500)
-        await self.human_type(page, email_sel, self.username)
-        await self.human_delay(500, 900)
-        await page.click("#idSIButton9")
-        await self.human_delay(1200, 2200)
-        await page.wait_for_load_state("domcontentloaded")
+        if await self._poll_js(wid,
+                               _present_js("input[name='loginfmt'], "
+                                           "input[type='email']"), "yes", 15):
+            await self.safari_fill(wid, ["input[name='loginfmt']",
+                                         "input[type='email']"],
+                                   self.username)
+            await self.human_delay(500, 900)
+            await self.safari_click(wid, ["#idSIButton9",
+                                          "button[type='submit']"])
+            await self.human_delay(1500, 2500)
 
         # Microsoft password
         print("[sheridan] Step 2/3 — entering password...")
-        passwd_sel = "input[name='passwd'], input[type='password']"
-        await page.wait_for_selector(passwd_sel, timeout=15000)
-        await page.wait_for_timeout(500)
-        await self.human_type(page, passwd_sel, self.password)
-        await self.human_delay(500, 900)
-        await page.click("#idSIButton9")
-        await self.human_delay(1500, 2500)
+        if await self._poll_js(wid,
+                               _present_js("input[name='passwd'], "
+                                           "input[type='password']"),
+                               "yes", 15):
+            await self.safari_fill(wid, ["input[name='passwd']",
+                                         "input[type='password']"],
+                                   self.password)
+            await self.human_delay(500, 900)
+            await self.safari_click(wid, ["#idSIButton9",
+                                          "button[type='submit']"])
+            await self.human_delay(2000, 3000)
 
         # MFA (waits for user to approve on phone/authenticator)
-        await self._handle_mfa_if_needed(page)
+        await self._handle_mfa_if_needed(wid)
 
         # "Stay signed in?" → Yes
         try:
-            stay_btn = page.locator("#idSIButton9")
-            if await stay_btn.is_visible(timeout=6000):
+            if await self.safari_present(wid, ["#idSIButton9"]):
                 print("[sheridan] Step 3/3 — confirming 'Stay signed in'...")
-                await stay_btn.click()
+                await self.safari_click(wid, ["#idSIButton9"])
                 await self.human_delay(1000, 2000)
-        except Exception:
+        except RuntimeError:
             pass
 
         print("[sheridan] Waiting for redirect back to Sheridan Works...")
-        try:
-            await page.wait_for_url(f"**{SHERIDAN_BASE}**", timeout=30000)
-        except Exception:
-            pass
+        await self._wait_url(wid, SHERIDAN_BASE, 30)
         await self.human_delay(1500, 2500)
         print("[sheridan] Login complete.")
 
-    async def _handle_mfa_if_needed(self, page: Page) -> None:
+    async def _handle_mfa_if_needed(self, wid: int) -> None:
         """Waits up to 90 s for the user to approve an MFA prompt."""
-        mfa_sels = [
-            "input[name='otc']",
-            "#idRichContext",
-            "#idDiv_SAOTCS_Proofs",
-        ]
+        mfa_sels = ["input[name='otc']", "#idRichContext",
+                    "#idDiv_SAOTCS_Proofs"]
         for sel in mfa_sels:
             try:
-                if await page.locator(sel).is_visible(timeout=2500):
+                if await self.safari_present(wid, [sel]):
                     print("\n[sheridan] *** MFA required ***")
-                    print("[sheridan]     Approve the sign-in on your Authenticator app.")
+                    print("[sheridan]     Approve the sign-in on your "
+                          "Authenticator app.")
                     print("[sheridan]     Waiting up to 90 seconds...\n")
-                    await page.wait_for_function(
-                        f"() => !document.querySelector('{sel}')",
-                        timeout=90000,
-                    )
+                    gone = _absent_js(sel)
+                    for _ in range(180):
+                        out = (await asyncio.to_thread(safari.js, wid, gone)
+                               ).strip().strip('"')
+                        if out == "yes":
+                            return
+                        await asyncio.sleep(0.5)
                     return
-            except Exception:
-                continue
+            except RuntimeError:
+                return
 
     # ------------------------------------------------------------------
     # Job scraping
     # ------------------------------------------------------------------
 
-    async def _scrape_job_listings(self, page: Page) -> list[Job]:
+    async def _scrape_job_listings(self, wid: int) -> list[Job]:
         """
         Triggers "For My Program" quick search, waits for the AJAX table,
         then paginates through all results.
@@ -201,45 +236,39 @@ class SheridanScraper(BaseScraper):
         page_num = 1
 
         print("[sheridan] Triggering job search ('For My Program')...")
-        await page.evaluate("""() => {
-            const a = document.querySelector('.stat-table a[onclick*="displayQuickSearch"]');
-            if (a) a.click();
-        }""")
+        await asyncio.to_thread(safari.js, wid, TRIGGER_SEARCH_JS)
 
         while True:
-            # Wait for the postingsTable to appear / update
-            try:
-                await page.wait_for_selector(
-                    "#postingsTable tbody tr.searchResult",
-                    timeout=JOBS_LOAD_TIMEOUT,
-                )
-            except Exception:
-                print(f"[sheridan] Timed out waiting for job table on page {page_num}.")
+            if not await self._poll_js(wid, ROWS_PRESENT_JS, "yes",
+                                       JOBS_LOAD_TIMEOUT):
+                print(f"[sheridan] Timed out waiting for job table "
+                      f"on page {page_num}.")
                 break
 
             await self.human_delay(800, 1500)
 
-            # Extract all visible rows
-            rows = await page.query_selector_all(
-                "#postingsTable tbody tr.searchResult"
-            )
+            try:
+                out = await asyncio.to_thread(safari.js, wid, ROWS_JS)
+                rows = json.loads(out)
+            except (RuntimeError, json.JSONDecodeError) as e:
+                print(f"[sheridan] Extract error: {e}")
+                break
             print(f"[sheridan] Page {page_num}: {len(rows)} rows found.")
 
             for row in rows:
                 try:
-                    job = await self._parse_row(row)
+                    job = self._parse_row(row)
                     if job:
                         jobs.append(job)
                 except Exception as e:
                     print(f"[sheridan] Row parse error: {e}")
 
-            # Check for a "Next" pagination button
-            next_btn = page.locator(
-                ".pagination a:text('Next'), .pagination a:text('>'), "
-                ".pagination li:not(.disabled) a[rel='next']"
-            )
-            if await next_btn.count() > 0:
-                await next_btn.first.click()
+            try:
+                nxt = (await asyncio.to_thread(safari.js, wid, NEXT_JS)
+                       ).strip().strip('"')
+            except RuntimeError:
+                break
+            if nxt == "clicked":
                 await self.human_delay(1500, 3000)
                 page_num += 1
             else:
@@ -247,63 +276,36 @@ class SheridanScraper(BaseScraper):
 
         return jobs
 
-    async def _parse_row(self, row: ElementHandle) -> Job | None:
+    def _parse_row(self, row: dict) -> Job | None:
         """
-        Extracts a Job from a single #postingsTable tbody row.
-
-        Cell layout (0-indexed):
-          0  = Shortlist / View buttons
-          1  = App Status
-          2  = Term
-          3  = Posting ID
-          4  = Job Title (may have "NEW " badge prefix)
-          5  = Organization
-          6  = Division
-          7  = Position Type
-          8  = Openings
-          9  = Internal Status
-          10 = Location
-          11 = City
-          12 = App Deadline
-          13 = (empty)
+        Extracts a Job from one table row ({rowId, cells}).
+        Cell layout (0-indexed): 0=Shortlist/View 1=App Status 2=Term
+        3=Posting ID 4=Title 5=Organization 11=City 12=App Deadline.
         """
-        cells = await row.query_selector_all("td")
+        cells = row.get("cells", [])
         if len(cells) < 12:
             return None
 
-        # Posting ID from the row's own id attribute ("posting56372")
-        row_id_attr = (await row.get_attribute("id")) or ""
-        posting_id = row_id_attr.replace("posting", "").strip()
+        posting_id = (row.get("rowId", "") or "").replace("posting", "").strip()
         if not posting_id.isdigit():
             return None
 
-        # Term — must be Summer 2026
-        term = (await cells[2].inner_text()).strip()
+        term = (cells[2] or "").strip()
         if "summer" not in term.lower():
             return None  # Skip non-summer terms
 
-        # Title — strip leading "NEW " badge text
-        title_raw = (await cells[4].inner_text()).strip()
-        title = re.sub(r"^NEW\s+", "", title_raw).strip()
+        title = re.sub(r"^NEW\s+", "", (cells[4] or "").strip()).strip()
         if not title:
             return None
 
-        # Organization
-        company = (await cells[5].inner_text()).strip() or "Unknown"
-
-        # City
-        city = (await cells[11].inner_text()).strip() or "Ontario, Canada"
-
-        # Deadline
-        deadline_raw = (await cells[12].inner_text()).strip()
+        company = (cells[5] or "").strip() or "Unknown"
+        city = (cells[11] or "").strip() or "Ontario, Canada"
+        deadline_raw = (cells[12] or "").strip()
         deadline = _parse_date(deadline_raw) if deadline_raw else None
 
-        # URL: deep-link reference using posting ID
         url = f"{COOP_JOBS_URL}#posting{posting_id}"
-
-        job_id = make_job_id("sheridan", url)
         return Job(
-            id=job_id,
+            id=make_job_id("sheridan", url),
             title=title,
             company=company,
             location=city,
@@ -315,17 +317,28 @@ class SheridanScraper(BaseScraper):
         )
 
 
+def _present_js(selectors: str) -> str:
+    import json as _json
+    return ("(() => [...document.querySelectorAll("
+            f"{_json.dumps(selectors)})].some(e => e && "
+            'e.offsetParent !== null) ? "yes" : "no")()')
+
+
+def _absent_js(selector: str) -> str:
+    import json as _json
+    return ("(() => !document.querySelector("
+            f"{_json.dumps(selector)}) ? \"yes\" : \"no\")()")
+
+
 def _parse_date(raw: str) -> str | None:
     """Normalises messy date strings to YYYY-MM-DD."""
     raw = raw.strip()
-    # Already ISO
     if re.match(r"\d{4}-\d{2}-\d{2}", raw):
         return raw[:10]
     for fmt in ("%b %d, %Y", "%B %d, %Y", "%b %d, %Y %I:%M %p",
                 "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d"):
         try:
             from datetime import datetime as dt
-            # Strip time portion for formats like "Mar 4, 2026 11:59 PM"
             cleaned = re.sub(r"\s+\d+:\d+.*$", "", raw.strip())
             return dt.strptime(cleaned, fmt).strftime("%Y-%m-%d")
         except ValueError:

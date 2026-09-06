@@ -9,7 +9,7 @@ A Python CLI tool that scrapes co-op/internship listings from **Sheridan Works**
 ## ✨ Features
 
 - 🔍 **Scrapes Sheridan Works** — logs in via Microsoft SSO, handles MFA, pulls all Summer 2026 co-op postings for your program
-- 🔍 **Scrapes Indeed Canada** — Cloudflare bypass, persistent Chrome profile, filtered to the Greater Toronto Area
+- 🔍 **Scrapes Indeed Canada** — real Safari (no bot flags), filtered to the Greater Toronto Area
 - 📋 **Tracks every job** with statuses: `new → seen → applied / skipped`
 - 🚀 **`apply-all` mode** — loops through all new jobs one-by-one, sorted by deadline (most urgent first), opening each in a browser
 - 🪟 **Dual-tab apply** — if a Sheridan posting links out to an external ATS (Workday, Greenhouse, Lever…), both the Sheridan page *and* the external form open side-by-side in the same window
@@ -30,11 +30,13 @@ A Python CLI tool that scrapes co-op/internship listings from **Sheridan Works**
 ├── .env.example             # Copy to .env and fill in your details
 │
 ├── scrapers/
-│   ├── base.py              # BaseScraper (human_delay, human_type, etc.)
+│   ├── base.py              # BaseScraper + Safari fill/click helpers
 │   ├── sheridan.py          # Sheridan Works scraper (Microsoft SSO login)
-│   └── indeed.py            # Indeed Canada scraper (Cloudflare bypass)
+│   ├── indeed.py            # Indeed Canada scraper (real Safari)
+│   └── linkedin.py          # LinkedIn recruiter collector
 │
 ├── browser/
+│   ├── safari_bridge.py     # AppleScript+JS bridge (all web actions)
 │   └── apply.py             # Opens job pages, prefills fields, attaches resume
 │
 ├── models/
@@ -59,8 +61,11 @@ cd coop-job-assistant
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium
 ```
+
+> macOS only. One-time Safari setup: Settings → Advanced → Show Develop
+> menu, then Develop → Allow JavaScript from Apple Events. Sign in once
+> in Safari itself (Indeed / LinkedIn / Sheridan) — every run reuses it.
 
 ### 2. Configure your `.env`
 
@@ -171,7 +176,7 @@ python main.py status <job_id> skipped
 ## 🔐 Security & Privacy
 
 - Your `.env` file (credentials + personal info) is **gitignored** and never committed
-- Session cookies (`data/`) are **gitignored** and stay local
+- Sessions live in Safari itself — sign in once, no separate profiles
 - The tool **never auto-submits** any form — every submission is 100% manual
 
 ---
@@ -180,11 +185,10 @@ python main.py status <job_id> skipped
 
 | Tool | Purpose |
 |---|---|
-| [Playwright](https://playwright.dev/python/) | Browser automation (headful) |
+| Safari + AppleScript (`osascript`) + JS | All browser automation (real session, real fingerprint) |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | `.env` credential loading |
 | [Rich](https://github.com/Textualize/rich) | Terminal UI (tables, panels, prompts) |
 | Microsoft SSO / Shibboleth | Sheridan Works authentication |
-| Persistent Chrome Profile | Cloudflare & Indeed session persistence |
 
 ---
 

@@ -363,29 +363,6 @@ def cmd_config(args: argparse.Namespace) -> None:
                   "→ linkedin_drafts → linkedin_autosend[/]")
 
 
-def cmd_import_cookies(args: argparse.Namespace) -> None:
-    """Steal Safari login cookies → Playwright sessions."""
-    from storage.safari_cookies import import_from_safari
-    try:
-        total, counts = import_from_safari()
-    except FileNotFoundError as e:
-        console.print(f"[red]{e}[/]")
-        return
-    except PermissionError:
-        console.print(
-            "[red]macOS blocked Safari's cookie file.[/]\n"
-            "Grant Full Disk Access to your terminal app:\n"
-            "[dim]System Settings → Privacy & Security → Full Disk Access "
-            "→ add Terminal (or iTerm/VS Code), then restart it and retry.[/]")
-        return
-    if total:
-        detail = ", ".join(f"{k}: {v}" for k, v in counts.items() if v)
-        console.print(f"[green]Imported {total} cookie(s)[/] ({detail})")
-        console.print("[dim]Written to data/sheridan_cookies.json + "
-                      "data/imported_cookies.json. Scrapers pick them up "
-                      "automatically.[/]")
-
-
 def cmd_doctor(args: argparse.Namespace) -> None:
     """Check every piece of the pipeline. Non-invasive — opens nothing."""
     import os
@@ -398,23 +375,31 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     def check(name: str, ok: bool, hint: str = "") -> None:
         results.append((name, ok, hint))
 
-    # 1. Python deps
-    for mod in ("playwright", "dotenv", "rich", "yaml"):
+    # 1. Python deps (stdlib + pip only — no browser driver packages)
+    for mod in ("dotenv", "rich", "yaml"):
         try:
             __import__(mod)
             check(f"dep: {mod}", True)
         except ImportError:
             check(f"dep: {mod}", False, ".venv/bin/pip install -r requirements.txt")
 
-    # 2. Playwright browser binaries — look for a Chromium install in
-    # the standard Playwright browsers directories.
-    _pw_browsers = [
-        Path.home() / ".local/share/pwplaywright" / "chromium",
-        Path.home() / ".cache/ms-playwright" / "chromium",
-    ]
-    has_chromium = any(p.exists() for p in _pw_browsers)
-    check("playwright chromium", has_chromium,
-          ".venv/bin/playwright install chromium")
+    # 2. Apple native stack: Safari + osascript + JS-from-Apple-Events
+    check("Safari.app", Path("/Applications/Safari.app").exists(),
+          "macOS only — this pipeline drives real Safari")
+    check("osascript", bool(shutil.which("osascript")),
+          "should ship with macOS — check your PATH")
+    try:
+        out = sp.run(
+            ["defaults", "read", "com.apple.Safari",
+             "AllowJavaScriptFromAppleEvents"],
+            capture_output=True, text=True, timeout=10,
+        )
+        js_ok = out.returncode == 0 and out.stdout.strip() == "1"
+    except Exception:
+        js_ok = False
+    check("Safari: Allow JavaScript from Apple Events", js_ok,
+          "Safari → Settings → Advanced → Show Develop menu, then "
+          "Develop → Allow JavaScript from Apple Events")
 
     # 3. PDF toolchain
     for tool in ("pandoc", "weasyprint"):
@@ -459,16 +444,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
               "open LM Studio → Developer tab → Start Server "
               "(needed for tailoring + drafts)")
 
-    # 7. Browser login profiles (Playwright ≠ Safari!)
-    root = Path(__file__).parent
-    for label, d in (
-        ("Sheridan Works session", root / "data" / "sheridan_cookies.json"),
-        ("Indeed profile", root / "data" / "indeed_profile"),
-        ("LinkedIn profile", root / "data" / "linkedin_profile"),
-    ):
-        check(f"login: {label}", d.exists(),
-              f"first run signs you in once — Safari logins do NOT carry over "
-              f"(Playwright uses its own Chrome profiles)")
+    # 7. Login sessions — native Safari holds them; no profiles to manage.
+    # Sign in once in Safari itself (Indeed / LinkedIn / Sheridan SSO)
+    # and every run reuses it. Nothing to check here.
+    check("login: native Safari sessions", True)
 
     # 8. Job store
     jobs = load_jobs()
@@ -582,12 +561,6 @@ def build_parser() -> argparse.ArgumentParser:
     # doctor
     sub.add_parser("doctor", help="Check every pipeline piece (non-invasive)")
 
-    # import-cookies
-    sub.add_parser(
-        "import-cookies",
-        help="Import Safari login cookies so you skip manual sign-in",
-    )
-
     return parser
 
 
@@ -625,8 +598,6 @@ def main() -> None:
         cmd_config(args)
     elif args.command == "doctor":
         cmd_doctor(args)
-    elif args.command == "import-cookies":
-        cmd_import_cookies(args)
     else:
         parser.print_help()
         sys.exit(1)

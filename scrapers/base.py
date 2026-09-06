@@ -2,7 +2,8 @@ from __future__ import annotations
 import asyncio
 import random
 from abc import ABC, abstractmethod
-from playwright.async_api import Page
+
+from browser import safari_bridge as safari
 
 
 class BaseScraper(ABC):
@@ -18,13 +19,60 @@ class BaseScraper(ABC):
         """Randomized pause that mimics human reading/thinking time."""
         await asyncio.sleep(random.uniform(min_ms, max_ms) / 1000)
 
-    async def human_type(self, page: Page, selector: str, text: str) -> None:
-        """Types text character-by-character with realistic inter-key delays."""
-        await page.click(selector)
-        await asyncio.sleep(random.uniform(0.1, 0.3))
-        for char in text:
-            await page.keyboard.type(char)
-            await asyncio.sleep(random.uniform(0.05, 0.18))
+    # ------------------------------------------------------------------
+    # Safari form helpers (all JS, selector-fallback lists)
+    # ------------------------------------------------------------------
+
+    async def safari_fill(self, wid: int, selectors: list[str], value: str) -> bool:
+        """
+        Fill the first visible, empty input/textarea matching any selector.
+        Fires input/change events so React/Angular pick it up.
+        """
+        sels = ", ".join(selectors)
+        sels_js = json_dumps_value(sels)
+        out = await asyncio.to_thread(
+            safari.js, wid,
+            f"""(() => {{
+              const el = [...document.querySelectorAll({sels_js})]
+                .find(e => e && e.offsetParent !== null
+                  && (e.value === undefined || e.value === ""));
+              if (!el) return "miss";
+              el.focus();
+              el.value = {json_dumps_value(value)};
+              el.dispatchEvent(new Event("input", {{bubbles: true}}));
+              el.dispatchEvent(new Event("change", {{bubbles: true}}));
+              return "filled";
+            }})()""",
+        )
+        return out.strip().strip('"') == "filled"
+
+    async def safari_click(self, wid: int, selectors: list[str]) -> bool:
+        """Click the first visible element matching any selector."""
+        sels = ", ".join(selectors)
+        sels_js = json_dumps_value(sels)
+        out = await asyncio.to_thread(
+            safari.js, wid,
+            f"""(() => {{
+              const el = [...document.querySelectorAll({sels_js})]
+                .find(e => e && e.offsetParent !== null);
+              if (!el) return "miss";
+              el.scrollIntoView({{block: "center"}});
+              el.click();
+              return "clicked";
+            }})()""",
+        )
+        return out.strip().strip('"') == "clicked"
+
+    async def safari_present(self, wid: int, selectors: list[str]) -> bool:
+        """True if any selector matches a visible element right now."""
+        sels = ", ".join(selectors)
+        sels_js = json_dumps_value(sels)
+        out = await asyncio.to_thread(
+            safari.js, wid,
+            f"""(() => [...document.querySelectorAll({sels_js})]
+              .some(e => e && e.offsetParent !== null) ? "yes" : "no")()""",
+        )
+        return out.strip().strip('"') == "yes"
 
     def is_summer_2026(self, text: str) -> bool:
         """Heuristic: does this text suggest a Summer 2026 / intern position?"""
@@ -35,3 +83,9 @@ class BaseScraper(ABC):
     async def scrape(self) -> list:
         """Subclasses implement this and return list[Job]."""
         ...
+
+
+def json_dumps_value(value: str) -> str:
+    """Encode a Python string as a JS string literal (stdlib json)."""
+    import json
+    return json.dumps(value)

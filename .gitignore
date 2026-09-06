@@ -1,6 +1,9 @@
 # Credentials & secrets
 .env
 
+# Personal resume PDFs (regenerate per machine — path lives in .env)
+resume/*.pdf
+
 # Python
 .venv/
 __pycache__/
