@@ -16,7 +16,9 @@ Commands:
   python main.py status <job_id> applied   Mark a job without opening the browser
   python main.py status <job_id> skipped
 
-  python main.py tailor <job_id>     Generate a tailored resume PDF for one job
+   python main.py tailor <job_id>     Generate a tailored resume PDF for one job
+   python main.py slate-collect    Back up own SLATE writing (gated)
+   python main.py slate-style      Distill voice profile from backup (gated)
   python main.py linkedin-collect    Scrape recruiters at applied companies (gated)
   python main.py outreach-drafts     LLM drafts for recruiters (gated)
   python main.py outreach-list       Show all recruiter records + drafts
@@ -418,6 +420,16 @@ def cmd_linkedin_collect(args: argparse.Namespace) -> None:
     asyncio.run(collect())
 
 
+def cmd_slate_collect(args: argparse.Namespace) -> None:
+    from slate.collect import collect
+    asyncio.run(collect())
+
+
+def cmd_slate_style(args: argparse.Namespace) -> None:
+    from slate.style import distill_style
+    distill_style()
+
+
 def cmd_outreach_drafts(args: argparse.Namespace) -> None:
     from outreach.outreach import drafts
     drafts(load_jobs(), force=args.force)
@@ -460,7 +472,8 @@ def cmd_config(args: argparse.Namespace) -> None:
     console.print(Panel("\n".join(lines), title="config.yaml toggles", expand=False))
     console.print("[dim]Edit config.yaml to flip toggles. Ladder: dry_run → "
                   "resume_tailoring → auto_apply → auto_submit → linkedin_collect "
-                  "→ linkedin_drafts → linkedin_autosend[/]")
+                  "→ linkedin_drafts → linkedin_autosend[/]\n"
+                  "[dim]Voice: slate_collect → slate_style[/]")
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -662,6 +675,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scrape recruiters at companies you applied to (gated by toggles)",
     )
 
+    # slate-collect
+    sub.add_parser(
+        "slate-collect",
+        help="Back up own SLATE submissions + discussion posts (gated)",
+    )
+
+    # slate-style
+    sub.add_parser(
+        "slate-style",
+        help="Distill collected writing into a voice profile (gated)",
+    )
+
     # outreach-drafts
     p_drafts = sub.add_parser("outreach-drafts", help="Generate outreach drafts (gated)")
     p_drafts.add_argument("--force", action="store_true",
@@ -708,6 +733,10 @@ def main() -> None:
         cmd_tailor(args)
     elif args.command == "linkedin-collect":
         cmd_linkedin_collect(args)
+    elif args.command == "slate-collect":
+        cmd_slate_collect(args)
+    elif args.command == "slate-style":
+        cmd_slate_style(args)
     elif args.command == "outreach-drafts":
         cmd_outreach_drafts(args)
     elif args.command == "outreach-list":

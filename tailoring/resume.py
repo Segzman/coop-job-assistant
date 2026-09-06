@@ -111,6 +111,15 @@ def tailor_resume(job) -> Path | None:
         f"# MASTER RESUME\n{master.read_text()}"
     )
 
+    voice_path = ROOT / "data" / "writing" / "style.md"
+    if voice_path.exists():
+        try:
+            voice = voice_path.read_text().strip()
+        except OSError:
+            voice = ""
+        if voice:
+            prompt += f"\n\n# VOICE (match this writing style)\n{voice}"
+
     tailored = _llm_chat(prompt)
     md_out.write_text(tailored if tailored else master.read_text())
     print(f"[tailor] Resume written: {md_out.name}"

@@ -21,6 +21,8 @@ DEFAULTS: dict = {
         "linkedin_collect": False,
         "linkedin_drafts": False,
         "linkedin_autosend": False,
+        "slate_collect": False,
+        "slate_style": False,
     },
     "limits": {
         "autosend_daily_cap": 10,
@@ -45,6 +47,7 @@ _REQUIRES = {
     "auto_submit": ["auto_apply"],
     "linkedin_drafts": ["linkedin_collect"],
     "linkedin_autosend": ["linkedin_drafts"],
+    "slate_style": ["slate_collect"],
 }
 
 
