@@ -44,7 +44,7 @@ from scrapers.indeed import IndeedScraper
 from storage.jobs import load_jobs, save_jobs, merge_new_jobs, update_status, update_external_url, filter_jobs
 from browser.apply import open_and_prefill
 from ui.display import print_job_table, print_job_detail
-from tailoring.resume import tailor_resume
+from tailoring.resume import tailor_resume, latest_pdf_for
 
 console = Console()
 
@@ -266,6 +266,106 @@ async def cmd_apply_all(args: argparse.Namespace) -> None:
         f"[dim]Skipped:  {skipped_this_run}[/]\n"
         f"[dim]Remaining: "
         f"{total - applied_this_run - skipped_this_run} (still new/seen)[/]",
+        title="[bold]Batch apply complete[/]",
+        expand=False,
+    ))
+
+
+async def cmd_apply_batch(args: argparse.Namespace) -> None:
+    """
+    One-yes batch apply:
+      Phase 1 — bespoke resume for EVERY queued job (cached; skips done).
+      Phase 2 — overview table + ONE confirm for the whole batch.
+      Phase 3 — walk all jobs with zero prompts: Safari opens (Sheridan
+                tab + external ATS tab), fields prefill, resume attaches,
+                you review + submit, close window, next job opens.
+                Each job auto-marks applied on window close; fix any you
+                bailed on afterwards with: status <id> skipped
+    """
+    jobs = load_jobs()
+    platform = getattr(args, "platform", "all")
+
+    candidates = [
+        j for j in jobs.values()
+        if j.status in ("new", "seen")
+        and (platform == "all" or j.platform == platform)
+    ]
+    candidates.sort(key=lambda j: (j.deadline or "9999-12-31", j.date_found))
+
+    max_n = getattr(args, "max", 0) or len(candidates)
+    candidates = candidates[:max_n]
+
+    if not candidates:
+        console.print("[yellow]No new/seen jobs queued.[/]\n"
+                      "[dim]Run: python main.py scrape / list --status all[/]")
+        return
+
+    total = len(candidates)
+
+    # ── Phase 1: bespoke resumes for all ──────────────────────────────
+    console.print(Panel(
+        f"[bold]Phase 1/{3} — tailoring {total} bespoke resume(s)[/]\n"
+        "[dim]Local LLM, ~2 min each. Already-tailored jobs are skipped.[/]",
+        title="[bold cyan]apply-batch[/]", expand=False))
+    ready = 0
+    for idx, job in enumerate(candidates, 1):
+        console.print(f"[dim][{idx}/{total}][/] {job.title[:45]} @ "
+                      f"{job.company[:25]} ...")
+        try:
+            pdf = tailor_resume(job) if config.enabled("resume_tailoring") \
+                else None
+        except Exception as e:
+            console.print(f"[red]Tailor failed for {job.id}: {e}[/]")
+            pdf = None
+        if pdf:
+            ready += 1
+    console.print(f"[green]Resumes ready: {ready}/{total}[/] "
+                  f"(missing ones fall back to master resume)\n")
+
+    # ── Phase 2: overview + ONE yes ───────────────────────────────────
+    console.print(Panel(
+        f"[bold]Phase 2/{3} — batch overview[/]\n"
+        f"{total} job(s), each opens in Safari (Sheridan + external tabs), "
+        f"prefilled, resume attached. You review + submit each; "
+        f"close window → next opens. Auto-marks applied.",
+        title="[bold cyan]apply-batch[/]", expand=False))
+    print_job_table(candidates)
+    if not Confirm.ask(
+        f"\nApply to all {total} jobs ({ready} bespoke resumes)?",
+        default=True,
+    ):
+        console.print("[yellow]Batch cancelled — resumes kept for later.[/]")
+        return
+
+    # ── Phase 3: promptless walk ──────────────────────────────────────
+    console.print(Panel(f"[bold]Phase 3/{3} — applying (no more prompts)[/]",
+                        title="[bold cyan]apply-batch[/]", expand=False))
+    done = 0
+    for idx, job in enumerate(candidates, 1):
+        console.print(
+            f"\n[bold cyan]{'─' * 60}[/]"
+            f"\n[bold]Job {idx}/{total}[/]  {job.title}  ·  {job.company}"
+            f"\n[bold cyan]{'─' * 60}[/]"
+        )
+        if job.status == "new":
+            update_status(job.id, "seen")
+        try:
+            resume_path = latest_pdf_for(job.id)
+            await open_and_prefill(job, resume_path)
+        except Exception as e:
+            console.print(f"[red]Browser error on {job.id}: {e} "
+                          f"— left as seen.[/]")
+            continue
+        update_status(job.id, "applied")
+        done += 1
+        console.print(f"[green]✓ {done}/{total} applied → "
+                      f"{job.company}[/]")
+
+    console.print()
+    console.print(Panel(
+        f"[green]Batch done: {done}/{total} marked applied.[/]\n"
+        "[dim]Bailed on any without submitting? Fix with:\n"
+        "  python main.py status <job_id> skipped[/]",
         title="[bold]Batch apply complete[/]",
         expand=False,
     ))
@@ -517,6 +617,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Platform to batch-apply to (default: sheridan)",
     )
 
+    # apply-batch (one-yes batch mode)
+    p_batch = sub.add_parser(
+        "apply-batch",
+        help="Tailor all resumes, one confirm, then walk every job",
+    )
+    p_batch.add_argument(
+        "--platform",
+        choices=["sheridan", "indeed", "all"],
+        default="all",
+        help="Platform to batch-apply to (default: all)",
+    )
+    p_batch.add_argument(
+        "--max",
+        type=int,
+        default=0,
+        help="Cap jobs this run (0 = all). Deadlines-soonest first.",
+    )
+
     # status
     p_status = sub.add_parser("status", help="Manually update a job's status")
     p_status.add_argument("job_id", help="Job ID")
@@ -580,6 +698,8 @@ def main() -> None:
         asyncio.run(cmd_apply(args))
     elif args.command == "apply-all":
         asyncio.run(cmd_apply_all(args))
+    elif args.command == "apply-batch":
+        asyncio.run(cmd_apply_batch(args))
     elif args.command == "status":
         cmd_status(args)
     elif args.command == "set-url":
