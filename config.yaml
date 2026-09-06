@@ -1,6 +1,6 @@
 toggles:
-  dry_run: true
-  resume_tailoring: false
+  dry_run: false
+  resume_tailoring: true
   auto_apply: false
   auto_submit: false
   linkedin_collect: false
@@ -13,7 +13,7 @@ limits:
   autosend_max_per_recruiter: 1
 llm:
   base_url: http://localhost:1234/v1
-  model: local-model
+  model: qwen3-8b-mlx
   temperature: 0.4
 resume:
   master: resume/master_resume.md

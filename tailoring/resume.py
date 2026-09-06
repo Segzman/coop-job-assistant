@@ -28,8 +28,14 @@ and a job posting. Rewrite the resume to target that posting:
 - Adjust the professional summary to echo the posting's key requirements.
 - Reorder the skills section, most relevant first.
 - Mirror important keywords from the posting where they truthfully apply.
+- PROJECT MATCHING: the master resume lists GitHub projects with URLs.
+  Order projects so the most relevant to the posting comes first
+  (e.g. Kotlin/Android work for mobile roles, .NET/C# for backend roles,
+  Python/data work for data roles). Keep every project's GitHub URL —
+  they are the proof. Never drop a project, only reorder.
 HARD RULES:
 - Never invent experience, employers, dates, degrees, or skills.
+- Never invent project URLs or attach a URL to the wrong project.
 - Never remove factual content; only reorder/reword/emphasize.
 - Keep the same overall Markdown structure (name header, sections).
 - Output ONLY the resume Markdown, no commentary."""
