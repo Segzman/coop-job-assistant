@@ -291,8 +291,8 @@ class SheridanScraper(BaseScraper):
             return None
 
         term = (cells[2] or "").strip()
-        if "summer" not in term.lower():
-            return None  # Skip non-summer terms
+        if not _term_ok(term):
+            return None  # Skip stale terms (e.g. past co-op cycles)
 
         title = re.sub(r"^NEW\s+", "", (cells[4] or "").strip()).strip()
         if not title:
@@ -302,6 +302,8 @@ class SheridanScraper(BaseScraper):
         city = (cells[11] or "").strip() or "Ontario, Canada"
         deadline_raw = (cells[12] or "").strip()
         deadline = _parse_date(deadline_raw) if deadline_raw else None
+        if deadline and deadline < datetime.now().strftime("%Y-%m-%d"):
+            return None  # Already closed
 
         url = f"{COOP_JOBS_URL}#posting{posting_id}"
         return Job(
@@ -328,6 +330,18 @@ def _absent_js(selector: str) -> str:
     import json as _json
     return ("(() => !document.querySelector("
             f"{_json.dumps(selector)}) ? \"yes\" : \"no\")()")
+
+
+def _term_ok(term: str) -> bool:
+    """
+    Accepts current/future co-op cycles ("Winter 2027", "Summer 2027",
+    "Fall 2026"...), rejects stale ones ("Summer 2025"). The board rolls
+    terms each cycle, so match on year instead of a hardcoded season.
+    """
+    m = re.search(r"(19|20)\d{2}", term)
+    if not m:
+        return "summer" in term.lower()  # unparseable → legacy behaviour
+    return int(m.group(0)) >= datetime.now().year
 
 
 def _parse_date(raw: str) -> str | None:
