@@ -47,3 +47,19 @@ def mark_sent(r_id: str) -> None:
         recruiters[r_id]["sent_date"] = date.today().isoformat()
         recruiters[r_id]["sent_at"] = datetime.now().isoformat(timespec="seconds")
         save_recruiters(recruiters)
+
+
+def invites_today() -> int:
+    """Count of connection invites sent today (separate cap)."""
+    today = date.today().isoformat()
+    return sum(
+        1 for r in load_recruiters().values()
+        if (r.get("invite_date") or "") == today
+    )
+
+
+def mark_invited(r_id: str) -> None:
+    recruiters = load_recruiters()
+    if r_id in recruiters:
+        recruiters[r_id]["invite_date"] = date.today().isoformat()
+        save_recruiters(recruiters)

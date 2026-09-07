@@ -152,6 +152,9 @@ async def _scrape_results(wid: int, company: str) -> int:
                 "date_found": datetime.now().isoformat(timespec="seconds"),
                 "draft": None,
                 "draft_date": None,
+                "connect_note": None,
+                "connect_note_date": None,
+                "invite_date": None,
                 "sent_date": None,
             })
             saved += 1

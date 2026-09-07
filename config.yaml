@@ -6,10 +6,12 @@ toggles:
   linkedin_collect: false
   linkedin_drafts: false
   linkedin_autosend: false
+  linkedin_connect: false
   slate_collect: true
   slate_style: true
 limits:
   autosend_daily_cap: 10
+  connect_daily_cap: 5
   autosend_min_delay_min: 5
   autosend_max_delay_min: 15
   autosend_max_per_recruiter: 1

@@ -21,11 +21,13 @@ DEFAULTS: dict = {
         "linkedin_collect": False,
         "linkedin_drafts": False,
         "linkedin_autosend": False,
+        "linkedin_connect": False,
         "slate_collect": False,
         "slate_style": False,
     },
     "limits": {
         "autosend_daily_cap": 10,
+        "connect_daily_cap": 5,
         "autosend_min_delay_min": 5,
         "autosend_max_delay_min": 15,
         "autosend_max_per_recruiter": 1,
@@ -47,6 +49,7 @@ _REQUIRES = {
     "auto_submit": ["auto_apply"],
     "linkedin_drafts": ["linkedin_collect"],
     "linkedin_autosend": ["linkedin_drafts"],
+    "linkedin_connect": ["linkedin_drafts"],
     "slate_style": ["slate_collect"],
 }
 

@@ -22,3 +22,9 @@ data/
 
 # macOS
 .DS_Store
+
+regen_tmp.py
+trial_tmp.py
+pass_tmp.py
+probe_*_tmp.py
+llmping_tmp.py

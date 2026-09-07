@@ -23,6 +23,7 @@ Commands:
   python main.py outreach-drafts     LLM drafts for recruiters (gated)
   python main.py outreach-list       Show all recruiter records + drafts
   python main.py outreach-send       Send queued drafts (heavily gated)
+  python main.py outreach-connect    Send connection invites (capped)
   python main.py config              Show current toggles
 """
 from __future__ import annotations
@@ -569,13 +570,17 @@ def cmd_outreach_list(args: argparse.Namespace) -> None:
         return
     for r_id, r in recruiters.items():
         sent = f" [green]SENT {r['sent_date']}[/]" if r.get("sent_date") else ""
+        invited = f" [blue]INVITED {r['invite_date']}[/]" if r.get("invite_date") else ""
         draft_flag = "draft ✓" if r.get("draft") else "NO DRAFT"
+        note_flag = "note ✓" if r.get("connect_note") else "NO NOTE"
         console.print(
             f"\n[bold]{r['name']}[/] — {r.get('title', '?')} @ {r.get('company', '?')}\n"
-            f"  {r['profile_url']}  [{draft_flag}]{sent}"
+            f"  {r['profile_url']}  [{draft_flag} | {note_flag}]{sent}{invited}"
         )
         if r.get("draft"):
             console.print(f"  [dim]{r['draft']}[/]")
+        if r.get("connect_note"):
+            console.print(f"  [dim]↳ {r['connect_note']}[/]")
     cap = int(config.limit("autosend_daily_cap"))
     console.print(f"\n[dim]{sent_today()}/{cap} sent today.[/]")
 
@@ -583,6 +588,11 @@ def cmd_outreach_list(args: argparse.Namespace) -> None:
 def cmd_outreach_send(args: argparse.Namespace) -> None:
     from outreach.outreach import autosend
     autosend()
+
+
+def cmd_outreach_connect(args: argparse.Namespace) -> None:
+    from outreach.outreach import connect
+    connect()
 
 
 def cmd_config(args: argparse.Namespace) -> None:
@@ -598,7 +608,8 @@ def cmd_config(args: argparse.Namespace) -> None:
     console.print("[dim]Edit config.yaml to flip toggles. Ladder: dry_run → "
                   "resume_tailoring → auto_apply → auto_submit → linkedin_collect "
                   "→ linkedin_drafts → linkedin_autosend[/]\n"
-                  "[dim]Voice: slate_collect → slate_style[/]")
+                  "[dim]Linkedin-connect hangs off linkedin_drafts. "
+                  "Voice: slate_collect → slate_style[/]")
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -832,6 +843,9 @@ def build_parser() -> argparse.ArgumentParser:
     # outreach-send
     sub.add_parser("outreach-send", help="Send queued drafts (heavily gated)")
 
+    # outreach-connect
+    sub.add_parser("outreach-connect", help="Send connection invites with notes (capped)")
+
     # config
     sub.add_parser("config", help="Show current feature toggles")
 
@@ -879,6 +893,8 @@ def main() -> None:
         cmd_outreach_list(args)
     elif args.command == "outreach-send":
         cmd_outreach_send(args)
+    elif args.command == "outreach-connect":
+        cmd_outreach_connect(args)
     elif args.command == "config":
         cmd_config(args)
     elif args.command == "doctor":
