@@ -47,6 +47,7 @@ from storage.jobs import load_jobs, save_jobs, merge_new_jobs, update_status, up
 from browser.apply import open_and_prefill
 from ui.display import print_job_table, print_job_detail
 from tailoring.resume import tailor_resume, latest_pdf_for
+from tailoring.cover import cover_letter, latest_pdf_for as latest_cover_for
 
 console = Console()
 
@@ -310,6 +311,7 @@ async def cmd_apply_batch(args: argparse.Namespace) -> None:
         "[dim]Local LLM, ~2 min each. Already-tailored jobs are skipped.[/]",
         title="[bold cyan]apply-batch[/]", expand=False))
     ready = 0
+    covers = 0
     for idx, job in enumerate(candidates, 1):
         console.print(f"[dim][{idx}/{total}][/] {job.title[:45]} @ "
                       f"{job.company[:25]} ...")
@@ -321,8 +323,17 @@ async def cmd_apply_batch(args: argparse.Namespace) -> None:
             pdf = None
         if pdf:
             ready += 1
-    console.print(f"[green]Resumes ready: {ready}/{total}[/] "
-                  f"(missing ones fall back to master resume)\n")
+        try:
+            resume_md = ""
+            md_path = Path("data") / "resumes" / f"{job.id}.md"
+            if md_path.exists():
+                resume_md = md_path.read_text()
+            if cover_letter(job, resume_md):
+                covers += 1
+        except Exception as e:
+            console.print(f"[red]Cover failed for {job.id}: {e}[/]")
+    console.print(f"[green]Resumes ready: {ready}/{total}, "
+                  f"covers: {covers}/{total}[/]\n")
 
     # ── Phase 2: overview + ONE yes ───────────────────────────────────
     console.print(Panel(
@@ -353,7 +364,8 @@ async def cmd_apply_batch(args: argparse.Namespace) -> None:
             update_status(job.id, "seen")
         try:
             resume_path = latest_pdf_for(job.id)
-            await open_and_prefill(job, resume_path)
+            cover_path = latest_cover_for(job.id)
+            await open_and_prefill(job, resume_path, cover_path)
         except Exception as e:
             console.print(f"[red]Browser error on {job.id}: {e} "
                           f"— left as seen.[/]")
@@ -413,6 +425,24 @@ def cmd_tailor(args: argparse.Namespace) -> None:
         console.print("[dim]Open it and review BEFORE using it in an application.[/]")
     elif not config.enabled("resume_tailoring"):
         console.print("[yellow]resume_tailoring toggle is OFF — enable in config.yaml.[/]")
+
+
+def cmd_cover(args: argparse.Namespace) -> None:
+    """Generate a cover letter PDF for one job."""
+    jobs = load_jobs()
+    if args.job_id not in jobs:
+        console.print(f"[red]Job ID '{args.job_id}' not found.[/]")
+        return
+    job = jobs[args.job_id]
+    print_job_detail(job)
+    resume_md = ""
+    md_path = Path("data") / "resumes" / f"{job.id}.md"
+    if md_path.exists():
+        resume_md = md_path.read_text()
+    path = cover_letter(job, resume_md)
+    if path:
+        console.print(f"\n[green]Cover PDF:[/] {path}")
+        console.print("[dim]Open it and review BEFORE using it in an application.[/]")
 
 
 def cmd_linkedin_collect(args: argparse.Namespace) -> None:
@@ -674,6 +704,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_tailor = sub.add_parser("tailor", help="Generate a tailored resume PDF for one job")
     p_tailor.add_argument("job_id", help="Job ID from the list command")
 
+    # cover
+    p_cover = sub.add_parser("cover", help="Generate a cover letter PDF for one job")
+    p_cover.add_argument("job_id", help="Job ID from the list command")
+
     # linkedin-collect
     sub.add_parser(
         "linkedin-collect",
@@ -736,6 +770,8 @@ def main() -> None:
         cmd_set_url(args)
     elif args.command == "tailor":
         cmd_tailor(args)
+    elif args.command == "cover":
+        cmd_cover(args)
     elif args.command == "linkedin-collect":
         cmd_linkedin_collect(args)
     elif args.command == "slate-collect":

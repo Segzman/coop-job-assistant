@@ -115,14 +115,15 @@ _DENYLIST = "save|draft|back|cancel|previous|next|sign|upload|continue"
 # Public entry point
 # ---------------------------------------------------------------------------
 
-async def open_and_prefill(job: Job, resume_path: Path | None = None) -> None:
+async def open_and_prefill(job: Job, resume_path: Path | None = None,
+                           cover_path: Path | None = None) -> None:
     """
     Opens the job application URL(s) in Safari.
     - If job.external_url is set (or auto-detected), opens BOTH pages
       (two tabs in one window).
     - Pre-fills known fields on every tab opened.
-    - Attaches `resume_path` (per-job tailored PDF) when given, else the
-      .env master resume.
+    - Attaches resume (first file input) and cover letter (second file
+      input, when the form has one).
     - With toggles.auto_submit ON (and dry_run off), attempts a
       sanity-checked auto-submit; otherwise waits for the user.
     """
@@ -162,6 +163,7 @@ async def open_and_prefill(job: Job, resume_path: Path | None = None) -> None:
     await asyncio.to_thread(safari.activate_tab, wid, 1)
     s_filled = await _prefill_all(wid, workday=True)
     await _attach_resume(wid, resume_path)
+    await _attach_cover(wid, cover_path)
     await _maybe_autosubmit(wid, s_filled, "Sheridan")
 
     # ── Tab 2: external application form ───────────────────────────────
@@ -173,6 +175,7 @@ async def open_and_prefill(job: Job, resume_path: Path | None = None) -> None:
         await asyncio.to_thread(safari.activate_tab, wid, 2)
         total_ext = await _prefill_all(wid, workday=True)
         await _attach_resume(wid, resume_path)
+        await _attach_cover(wid, cover_path)
         print(f"[apply] External form: pre-filled {total_ext} field(s).")
         await _maybe_autosubmit(wid, total_ext, "External")
     else:
@@ -318,16 +321,17 @@ async def _prefill_all(wid: int, workday: bool = False) -> int:
 # ---------------------------------------------------------------------------
 
 _ATTACH_CLICK_JS = """(() => {
-  const inp = [...document.querySelectorAll("input[type='file']")]
-    .find(e => {
+  const inputs = [...document.querySelectorAll("input[type='file']")]
+    .filter(e => {
       if (e.offsetParent === null) return false;
       const acc = (e.getAttribute("accept") || "").toLowerCase();
       return !acc || acc.indexOf("pdf") !== -1 ||
         acc.indexOf("doc") !== -1 || acc.indexOf("*") !== -1;
     });
-  if (!inp) return "miss";
-  inp.scrollIntoView({block: "center"});
-  inp.click();
+  const idx = __IDX__;
+  if (idx >= inputs.length) return "miss";
+  inputs[idx].scrollIntoView({block: "center"});
+  inputs[idx].click();
   return "clicked";
 })()"""
 
@@ -337,33 +341,59 @@ _ATTACH_CHECK_JS = """(() => {
 })()"""
 
 
-async def _attach_resume(wid: int,
-                         resume_path: str | Path | None = None) -> bool:
-    path = Path(resume_path or PROFILE["resume_path"] or "")
-    if not str(path):
-        return False
-    if not path.exists():
-        print(f"[apply] Resume file not found: {path}")
-        return False
+async def _attach_file_at(wid: int, path: Path, index: int,
+                          label: str) -> bool:
+    """Clicks the index-th suitable file input, drives the Open dialog."""
     try:
-        clicked = (await asyncio.to_thread(safari.js, wid, _ATTACH_CLICK_JS)
-                   ).strip().strip('"')
+        clicked = (await asyncio.to_thread(
+            safari.js, wid, _ATTACH_CLICK_JS.replace("__IDX__", str(index)))
+            ).strip().strip('"')
         if clicked != "clicked":
             return False
         await asyncio.to_thread(safari.upload_file, wid, str(path))
-        # verify the file landed:
         for _ in range(20):
             await asyncio.sleep(0.5)
             check = (await asyncio.to_thread(safari.js, wid, _ATTACH_CHECK_JS)
                      ).strip().strip('"')
             if check == "yes":
-                print(f"[apply] Resume attached: {path.name}")
+                print(f"[apply] {label} attached: {path.name}")
                 return True
-        print("[apply] Resume dialog completed but file not detected — "
-              "attach manually.")
+        print(f"[apply] Dialog done but {label} not detected — "
+              f"attach manually.")
         return False
     except RuntimeError:
         return False
+
+
+def _resolve(path_like: str | Path | None) -> Path | None:
+    if not path_like:
+        return None
+    path = Path(path_like)
+    if not path.exists():
+        print(f"[apply] File not found: {path}")
+        return None
+    return path
+
+
+async def _attach_resume(wid: int,
+                         resume_path: str | Path | None = None) -> bool:
+    path = _resolve(resume_path or PROFILE["resume_path"])
+    if not path:
+        return False
+    return await _attach_file_at(wid, path, 0, "Resume")
+
+
+async def _attach_cover(wid: int,
+                        cover_path: str | Path | None = None) -> bool:
+    """Cover goes to the SECOND file input; single-input forms skip it."""
+    path = _resolve(cover_path)
+    if not path:
+        return False
+    ok = await _attach_file_at(wid, path, 1, "Cover letter")
+    if not ok:
+        print("[apply] No second upload slot — attach cover manually "
+              "if the form wants one.")
+    return ok
 
 
 # ---------------------------------------------------------------------------
