@@ -425,8 +425,6 @@ async def _cmd_apply_batch_inner(args: argparse.Namespace, jobs: dict,
                 console.print(f"[red]Could not open Safari: {e}[/]")
                 break
         try:
-            await asyncio.to_thread(safari.new_tab_active, shared_wid,
-                                    BOARD_URL)
             state = await apply_to_posting(
                 shared_wid, posting_id, resume_path, cover_path,
                 job.company, job.title)

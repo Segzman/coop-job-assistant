@@ -94,25 +94,27 @@ async def _wait_rows(wid: int, timeout_s: int = 20) -> bool:
 async def upload_document(wid: int, pdf: Path, name: str,
                           doctype: str) -> bool:
     """
-    Dashboard → Upload a Document → Name + Type + file → Upload.
-    doctype: "Resume - .pdf" | "Coverletter - .pdf".
+    Fresh tab at dashboard → Upload a Document → Name + Type + file.
+    Own tab (goto-rendered dashboards lack the upload anchor);
+    closed on every exit path. Caller must (re)activate its tab after.
     """
     try:
-        await asyncio.to_thread(safari.goto, wid, DASH_URL)
-        await asyncio.sleep(5)
-        # Enter the Documents sub-view first — the upload anchor
-        # only exists there, not on the dashboard root.
+        await asyncio.to_thread(safari.new_tab_active, wid, DASH_URL)
         try:
-            await _js(wid, """(() => {
-              const a = [...document.querySelectorAll('a')].find(x =>
-                /^documents$/i.test((x.innerText || '').trim()));
-              if (a) a.click();
-            })()""")
-        except RuntimeError:
-            return False
-        await asyncio.sleep(3)
+            return await _upload_in_current_tab(wid, pdf, name, doctype)
+        finally:
+            await asyncio.to_thread(safari.close_current_tab, wid)
+    except RuntimeError:
+        return False
+
+
+async def _upload_in_current_tab(wid: int, pdf: Path, name: str,
+                                 doctype: str) -> bool:
+    try:
+        # The "upload document" anchor lives on the dashboard root —
+        # do NOT navigate into Documents (that view lacks it).
         entry = False
-        for _ in range(40):
+        for _ in range(30):
             await asyncio.sleep(0.5)
             try:
                 out = await _js(wid, UPLOAD_JS)
@@ -353,7 +355,8 @@ async def apply_to_posting(wid: int, posting_id: str, resume_pdf: Path,
             print("[sheridan-apply] Cover upload failed — resume only.")
             cover_name = ""
 
-    await asyncio.to_thread(safari.goto, wid, BOARD_URL)
+    # Fresh tab for the board (goto-rendered boards lose the anchor).
+    await asyncio.to_thread(safari.new_tab_active, wid, BOARD_URL)
     if not await _wait_board(wid):
         return "error"
     if (await _js(wid, TRIGGER_JS)).strip('"') != "clicked":
