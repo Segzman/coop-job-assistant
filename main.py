@@ -373,8 +373,11 @@ async def _cmd_apply_batch_inner(args: argparse.Namespace, jobs: dict,
         console.print("[yellow]Batch cancelled — resumes kept for later.[/]")
         return
 
-    # ── Phase 3: promptless walk ──────────────────────────────────────
-    console.print(Panel(f"[bold]Phase 3/{3} — applying (no more prompts)[/]",
+    # ── Phase 3: bot-does-all + one popup yes per job ───────────────
+    from browser import safari_bridge as safari
+    from browser.sheridan_apply import apply_to_posting, click_submit, BOARD_URL
+    console.print(Panel(f"[bold]Phase 3/{3} — bot applies, you give one "
+                        f"yes per job[/]",
                         title="[bold cyan]apply-batch[/]", expand=False))
     done = 0
     for idx, job in enumerate(candidates, 1):
@@ -385,23 +388,76 @@ async def _cmd_apply_batch_inner(args: argparse.Namespace, jobs: dict,
         )
         if job.status == "new":
             update_status(job.id, "seen")
+
+        # Non-Sheridan jobs: manual path (prefill + you submit).
+        if job.platform != "sheridan" or "#posting" not in job.url:
+            try:
+                resume_path = latest_pdf_for(job.id)
+                cover_path = latest_cover_for(job.id)
+                submitted = await open_and_prefill(job, resume_path,
+                                                   cover_path)
+            except Exception as e:
+                console.print(f"[red]Browser error on {job.id}: {e} "
+                              f"— left as seen.[/]")
+                continue
+            if not submitted:
+                continue
+            update_status(job.id, "applied")
+            done += 1
+            console.print(f"[green]✓ {done}/{total} applied → "
+                          f"{job.company}[/]")
+            continue
+
+        # Sheridan: full bot flow.
+        resume_path = latest_pdf_for(job.id)
+        if not resume_path:
+            console.print(f"[yellow]{job.id}: no tailored resume — "
+                          f"left as seen.[/]")
+            continue
+        cover_path = latest_cover_for(job.id)
+        posting_id = job.url.split("#posting")[-1]
         try:
-            resume_path = latest_pdf_for(job.id)
-            cover_path = latest_cover_for(job.id)
-            submitted = await open_and_prefill(job, resume_path, cover_path,
-                                               auto=True)
+            wid = await asyncio.to_thread(safari.open_window, BOARD_URL)
+            state = await apply_to_posting(
+                wid, posting_id, resume_path, cover_path,
+                job.company, job.title)
         except Exception as e:
             console.print(f"[red]Browser error on {job.id}: {e} "
                           f"— left as seen.[/]")
             continue
-        if not submitted:
-            console.print(f"[yellow]{job.company}: window closed before "
-                          f"submit — left as seen.[/]")
+        if state == "skipped":
+            console.print(f"[yellow]{job.company}: posting gone — "
+                          f"left as seen.[/]")
+            await asyncio.to_thread(safari.close_window, wid)
             continue
-        update_status(job.id, "applied")
-        done += 1
-        console.print(f"[green]✓ {done}/{total} applied → "
-                      f"{job.company}[/]")
+        if state != "ready":
+            console.print(f"[red]{job.company}: bot flow failed — "
+                          f"left as seen.[/]")
+            await asyncio.to_thread(safari.close_window, wid)
+            continue
+        try:
+            yes = await asyncio.to_thread(
+                safari.dialog_yes_no, f"Apply: {job.company}",
+                f"Submit application?\n{job.title}\n{job.company}\n"
+                f"Bespoke resume + cover in package, transcript default.")
+        except RuntimeError:
+            yes = False
+        if not yes:
+            console.print(f"[yellow]{job.company}: skipped by you.[/]")
+            await asyncio.to_thread(safari.close_window, wid)
+            continue
+        try:
+            verdict = await click_submit(wid)
+        finally:
+            await asyncio.to_thread(safari.close_window, wid)
+        if verdict == "confirmed":
+            update_status(job.id, "applied")
+            done += 1
+            console.print(f"[green]✓ {done}/{total} applied → "
+                          f"{job.company}[/]")
+        else:
+            console.print(f"[yellow]{job.company}: no confirmation "
+                          f"({verdict}) — left as seen, verify manually.[/]")
 
     console.print()
     console.print(Panel(
