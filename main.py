@@ -27,6 +27,7 @@ Commands:
 """
 from __future__ import annotations
 import asyncio
+import os
 import sys
 import argparse
 from datetime import date, timedelta
@@ -287,6 +288,28 @@ async def cmd_apply_batch(args: argparse.Namespace) -> None:
     """
     jobs = load_jobs()
     platform = getattr(args, "platform", "all")
+
+    # Single-instance guard: two batch runs would open duplicate windows.
+    lock_path = Path("data") / ".apply_batch.lock"
+    try:
+        old_pid = int(lock_path.read_text().strip())
+        os.kill(old_pid, 0)  # alive?
+        console.print(f"[red]A batch run is already going (pid {old_pid}).[/]\n"
+                      "[dim]Kill it first if stale, then retry.[/]")
+        return
+    except (OSError, ValueError):
+        pass
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(str(os.getpid()))
+    try:
+        await _cmd_apply_batch_inner(args, jobs, platform)
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+async def _cmd_apply_batch_inner(args: argparse.Namespace, jobs: dict,
+                                 platform: str) -> None:
+    """Body of cmd_apply_batch (see it for the phase contract)."""
 
     candidates = [
         j for j in jobs.values()
