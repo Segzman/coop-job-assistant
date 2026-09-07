@@ -102,6 +102,18 @@ def close_window(wid: int) -> None:
         pass  # already closed by the user — fine
 
 
+def close_current_tab(wid: int) -> None:
+    """Close the active tab of our window (window itself stays open)."""
+    try:
+        _run(
+            'tell application "Safari"\n'
+            f"close current tab of window id {wid}\n"
+            "end tell"
+        )
+    except RuntimeError:
+        pass
+
+
 def new_tab(wid: int, url: str) -> None:
     """Open url in a new tab of our window (does not steal focus)."""
     _run(
@@ -120,6 +132,17 @@ def activate_tab(wid: int, index: int) -> None:
         f"set current tab of window id {wid} to tab {index} of window id {wid}\n"
         "end tell"
     )
+
+
+def new_tab_active(wid: int, url: str) -> None:
+    """Open url in a new tab of our window and switch to it."""
+    new_tab(wid, url)
+    try:
+        n = tab_count(wid)
+        if n > 1:
+            activate_tab(wid, n)
+    except RuntimeError:
+        pass
 
 
 def tab_count(wid: int) -> int:

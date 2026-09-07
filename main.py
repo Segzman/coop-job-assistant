@@ -380,6 +380,7 @@ async def _cmd_apply_batch_inner(args: argparse.Namespace, jobs: dict,
                         f"yes per job[/]",
                         title="[bold cyan]apply-batch[/]", expand=False))
     done = 0
+    shared_wid: int | None = None  # one Safari window, tabs per job
     for idx, job in enumerate(candidates, 1):
         console.print(
             f"\n[bold cyan]{'─' * 60}[/]"
@@ -408,7 +409,7 @@ async def _cmd_apply_batch_inner(args: argparse.Namespace, jobs: dict,
                           f"{job.company}[/]")
             continue
 
-        # Sheridan: full bot flow.
+        # Sheridan: full bot flow, one shared window, one tab per job.
         resume_path = latest_pdf_for(job.id)
         if not resume_path:
             console.print(f"[yellow]{job.id}: no tailored resume — "
@@ -416,25 +417,35 @@ async def _cmd_apply_batch_inner(args: argparse.Namespace, jobs: dict,
             continue
         cover_path = latest_cover_for(job.id)
         posting_id = job.url.split("#posting")[-1]
+        if shared_wid is None:
+            try:
+                shared_wid = await asyncio.to_thread(
+                    safari.open_window, BOARD_URL)
+            except Exception as e:
+                console.print(f"[red]Could not open Safari: {e}[/]")
+                break
         try:
-            wid = await asyncio.to_thread(safari.open_window, BOARD_URL)
+            await asyncio.to_thread(safari.new_tab_active, shared_wid,
+                                    BOARD_URL)
             state = await apply_to_posting(
-                wid, posting_id, resume_path, cover_path,
+                shared_wid, posting_id, resume_path, cover_path,
                 job.company, job.title)
         except Exception as e:
             console.print(f"[red]Browser error on {job.id}: {e} "
                           f"— left as seen.[/]")
             continue
+        finally:
+            await asyncio.to_thread(safari.close_current_tab, shared_wid)
         if state == "skipped":
             console.print(f"[yellow]{job.company}: posting gone — "
                           f"left as seen.[/]")
-            await asyncio.to_thread(safari.close_window, wid)
             continue
         if state != "ready":
             console.print(f"[red]{job.company}: bot flow failed — "
                           f"left as seen.[/]")
-            await asyncio.to_thread(safari.close_window, wid)
             continue
+        # NOTE: the popup is a system dialog — the package tab stays
+        # open behind it, so submit clicks the very form just built.
         try:
             yes = await asyncio.to_thread(
                 safari.dialog_yes_no, f"Apply: {job.company}",
@@ -444,12 +455,11 @@ async def _cmd_apply_batch_inner(args: argparse.Namespace, jobs: dict,
             yes = False
         if not yes:
             console.print(f"[yellow]{job.company}: skipped by you.[/]")
-            await asyncio.to_thread(safari.close_window, wid)
             continue
         try:
-            verdict = await click_submit(wid)
+            verdict = await click_submit(shared_wid)
         finally:
-            await asyncio.to_thread(safari.close_window, wid)
+            await asyncio.to_thread(safari.close_current_tab, shared_wid)
         if verdict == "confirmed":
             update_status(job.id, "applied")
             done += 1
@@ -458,6 +468,9 @@ async def _cmd_apply_batch_inner(args: argparse.Namespace, jobs: dict,
         else:
             console.print(f"[yellow]{job.company}: no confirmation "
                           f"({verdict}) — left as seen, verify manually.[/]")
+
+    if shared_wid is not None:
+        await asyncio.to_thread(safari.close_window, shared_wid)
 
     console.print()
     console.print(Panel(

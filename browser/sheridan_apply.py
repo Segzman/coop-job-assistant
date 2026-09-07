@@ -99,8 +99,29 @@ async def upload_document(wid: int, pdf: Path, name: str,
     """
     try:
         await asyncio.to_thread(safari.goto, wid, DASH_URL)
-        await asyncio.sleep(4)
-        if (await _js(wid, UPLOAD_JS)).strip('"') != "clicked":
+        await asyncio.sleep(5)
+        # Enter the Documents sub-view first — the upload anchor
+        # only exists there, not on the dashboard root.
+        try:
+            await _js(wid, """(() => {
+              const a = [...document.querySelectorAll('a')].find(x =>
+                /^documents$/i.test((x.innerText || '').trim()));
+              if (a) a.click();
+            })()""")
+        except RuntimeError:
+            return False
+        await asyncio.sleep(3)
+        entry = False
+        for _ in range(40):
+            await asyncio.sleep(0.5)
+            try:
+                out = await _js(wid, UPLOAD_JS)
+            except RuntimeError:
+                return False
+            if out.strip('"') == "clicked":
+                entry = True
+                break
+        if not entry:
             print("[sheridan-apply] Upload entry not found.")
             return False
         await asyncio.sleep(4)
