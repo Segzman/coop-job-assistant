@@ -51,19 +51,26 @@ SEARCH_JS = """(() => {
   const seen = {};
   const out = [];
   document.querySelectorAll("a[href*='/in/']").forEach(a => {
-    const href = (a.getAttribute("href") || "").split("?")[0];
-    if (!href || !/^https:\\/\\/www\\.linkedin\\.com\\/in\\/[\\w-]+\\/?$/.test(href)) return;
+    let href = (a.getAttribute("href") || "").split("?")[0];
+    if (!href) return;
+    if (href.indexOf("/in/") === 0)
+      href = "https://www.linkedin.com" + href;
+    if (!/^https:\/\/www\.linkedin\.com\/in\/[\w-]+\/?$/.test(href)) return;
     if (seen[href]) return;
     seen[href] = 1;
+    // Skip off-screen/virtualized duplicates (stale content).
+    if (a.offsetParent === null) return;
     let block = a;
     for (let i = 0; i < 6 && block; i++) {
       const t = (block.innerText || "").replace(/\\s+/g, " ").trim();
-      if (t.length > 30) {
-        const parts = t.split("•");
-        let name = (parts[0] || "").trim();
-        let rest = parts.slice(1).join(" ").trim()
-          .replace(/^(1st|2nd|3rd\\+?)\\s*/, "");
-        const title = rest.split("|")[0].trim().slice(0, 120);
+      // "Megan Costa • 2nd Junior Recruiter ... | ..." — split on the
+      // ASCII degree marker (bullet glyphs vary), title runs to "|" or end.
+      const m = t.match(/^(.*?)\s+(1st|2nd|3rd\+?)\s+(.*)$/);
+      if (t.length > 30 && m) {
+        const name = m[1].replace(/[^A-Za-z0-9)\]]+$/g, "").trim();
+        let title = m[3].split("|")[0];
+        title = title.split(/ Follow | Past:| Current:/)[0].trim()
+          .slice(0, 120);
         if (name && title) {
           out.push({url: href, name: name.slice(0, 80), title});
           break;
