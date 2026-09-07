@@ -151,17 +151,13 @@ async def open_and_prefill(job: Job, resume_path: Path | None = None,
               if (a) { a.click(); return "clicked"; }
               return "miss";
             })()""")
-            if not await _poll_present(
-                    wid, [f".np-apply-btn-{posting_id}"], 15):
+            # Click INTO the posting → application view loads.
+            # Results paginate — walk pages until the button appears.
+            if not await _find_and_open_posting(wid, posting_id):
                 print(f"[apply] Posting {posting_id} not in results — "
                       f"skipping.")
                 await asyncio.to_thread(safari.close_window, wid)
                 return False
-            # Click INTO the posting → application view loads.
-            await asyncio.to_thread(safari.js, wid, f"""(() => {{
-              document.querySelector(".np-apply-btn-{posting_id}").click();
-              return "clicked";
-            }})()""")
             print(f"[apply] Opened posting {posting_id}, "
                   f"waiting for application view...")
             if not await _poll_present(wid, [
@@ -256,6 +252,42 @@ async def _ensure_board(wid: int, timeout_s: int = 25) -> bool:
 # ---------------------------------------------------------------------------
 # Polling
 # ---------------------------------------------------------------------------
+
+_NEXT_PAGE_JS = """(() => {
+  const n = [...document.querySelectorAll(".pagination a")]
+    .find(a => /^(next|>)$/i.test(a.innerText.trim()) &&
+      !a.closest("li.disabled"));
+  if (!n) return "none";
+  n.click();
+  return "clicked";
+})()"""
+
+
+async def _find_and_open_posting(wid: int, posting_id: str,
+                                 max_pages: int = 8) -> bool:
+    """Walk result pages; click the posting's apply button. False if absent."""
+    for _ in range(max_pages):
+        if await _poll_present(wid, [f".np-apply-btn-{posting_id}"], 8):
+            try:
+                await asyncio.to_thread(safari.js, wid, f"""(() => {{
+                  document.querySelector(".np-apply-btn-{posting_id}")
+                    .click();
+                  return "clicked";
+                }})()""")
+            except RuntimeError:
+                return False
+            print(f"[apply] Opened posting {posting_id}, "
+                  f"waiting for application view...")
+            return True
+        try:
+            nxt = (await asyncio.to_thread(safari.js, wid, _NEXT_PAGE_JS)
+                   ).strip().strip('"')
+        except RuntimeError:
+            return False
+        if nxt != "clicked":
+            return False
+        await asyncio.sleep(3)
+    return False
 
 async def _poll_present(wid: int, selectors: list[str],
                         timeout_s: int) -> bool:
