@@ -154,6 +154,23 @@ def focus() -> None:
     _run('tell application "Safari"\nactivate\nend tell')
 
 
+def dialog_yes_no(title: str, text: str, yes: str = "Submit",
+                  no: str = "Skip") -> bool:
+    """
+    Native macOS popup. Returns True iff the user clicked the yes button.
+    Used as the per-job final gate: the bot does everything, the human
+    gives one yes. Works from shells without stdin.
+    """
+    out = _run(
+        'display dialog '
+        f'"{_q(text)}" with title "{_q(title)}" '
+        f'buttons {{"{ _q(no) }", "{_q(yes)}"}} '
+        f'default button "{_q(yes)}" with icon note',
+        timeout=600,
+    )
+    return f"button returned:{yes}" in out
+
+
 # ---------------------------------------------------------------------------
 # File upload (native open-dialog driven via System Events)
 # ---------------------------------------------------------------------------

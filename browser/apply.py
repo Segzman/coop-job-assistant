@@ -116,7 +116,8 @@ _DENYLIST = "save|draft|back|cancel|previous|next|sign|upload|continue"
 # ---------------------------------------------------------------------------
 
 async def open_and_prefill(job: Job, resume_path: Path | None = None,
-                           cover_path: Path | None = None) -> None:
+                           cover_path: Path | None = None,
+                           auto: bool = False) -> bool:
     """
     Opens the job application URL(s) in Safari.
     - If job.external_url is set (or auto-detected), opens BOTH pages
@@ -124,12 +125,14 @@ async def open_and_prefill(job: Job, resume_path: Path | None = None,
     - Pre-fills known fields on every tab opened.
     - Attaches resume (first file input) and cover letter (second file
       input, when the form has one).
-    - With toggles.auto_submit ON (and dry_run off), attempts a
-      sanity-checked auto-submit; otherwise waits for the user.
+    - auto=False: prefill only, wait for the user to close the window.
+      Returns True (caller decides status).
+    - auto=True (Sheridan postings): bot clicks Apply, fills, attaches,
+      then asks ONE native popup yes/no. Yes → sanity-checked submit.
+      Returns True iff submitted.
     """
     start_url = job.url.split("#")[0] if "#posting" in job.url else job.url
     wid = await asyncio.to_thread(safari.open_window, start_url)
-    await asyncio.sleep(3)
 
     detected_external: str | None = None
 
@@ -138,6 +141,10 @@ async def open_and_prefill(job: Job, resume_path: Path | None = None,
     if job.platform == "sheridan" and "#posting" in job.url:
         posting_id = job.url.split("#posting")[-1]
         try:
+            if not await _ensure_board(wid):
+                print("[apply] Board never loaded — skipping.")
+                await asyncio.to_thread(safari.close_window, wid)
+                return False
             await asyncio.to_thread(safari.js, wid, """(() => {
               const a = document.querySelector(
                 '.stat-table a[onclick*="displayQuickSearch"]');
@@ -145,25 +152,40 @@ async def open_and_prefill(job: Job, resume_path: Path | None = None,
               return "miss";
             })()""")
             if await _poll_present(
-                    wid, [f".np-apply-btn-{posting_id}"], 12):
+                    wid, [f".np-apply-btn-{posting_id}"], 15):
                 await asyncio.to_thread(safari.js, wid, f"""(() => {{
                   document.querySelector(".np-apply-btn-{posting_id}").click();
                   return "clicked";
                 }})()""")
-                await asyncio.sleep(3)
+                await asyncio.sleep(4)
                 print(f"[apply] Opened posting {posting_id} in Sheridan Works.")
             detected_external = await _find_external_link(wid)
             if detected_external:
                 print(f"[apply] Auto-detected external link: {detected_external}")
         except RuntimeError:
             print("[apply] Safari window closed.")
-            return
+            return False
 
     await asyncio.sleep(2.5)
     await asyncio.to_thread(safari.activate_tab, wid, 1)
     s_filled = await _prefill_all(wid, workday=True)
     await _attach_resume(wid, resume_path)
     await _attach_cover(wid, cover_path)
+
+    if auto and job.platform == "sheridan" and "#posting" in job.url:
+        ok = await _dialog_submit(wid, job, s_filled, "Sheridan")
+        if ok:
+            await asyncio.to_thread(safari.close_window, wid)
+            return True
+        # Not submitted (thin form / ambiguous / user Skip): hand the
+        # open window to the human; close = done.
+        if await asyncio.to_thread(safari.window_exists, wid):
+            print("[apply] Window left open — finish manually, "
+                  "close when done.")
+            await asyncio.to_thread(safari.wait_window_closed, wid)
+            return True
+        return False
+
     await _maybe_autosubmit(wid, s_filled, "Sheridan")
 
     # ── Tab 2: external application form ───────────────────────────────
@@ -188,6 +210,31 @@ async def open_and_prefill(job: Job, resume_path: Path | None = None,
 
     await asyncio.to_thread(safari.wait_window_closed, wid)
     print("[apply] Window closed.")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Board readiness + dialog-gated submit
+# ---------------------------------------------------------------------------
+
+async def _ensure_board(wid: int, timeout_s: int = 25) -> bool:
+    """
+    The .stat-table quick-search anchor appears ~6 s after a fresh board
+    load. Aged windows lose it forever (open a fresh window per job —
+    open_and_prefill already does). Just wait for it here.
+    """
+    for _ in range(timeout_s * 2):
+        try:
+            out = (await asyncio.to_thread(
+                safari.js, wid,
+                "document.querySelector('.stat-table') ? 'yes' : 'no'")
+                ).strip().strip('"')
+        except RuntimeError:
+            return False
+        if out == "yes":
+            return True
+        await asyncio.sleep(0.5)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -400,22 +447,8 @@ async def _attach_cover(wid: int,
 # Sanity-gated auto-submit (only when toggles.auto_submit is ON)
 # ---------------------------------------------------------------------------
 
-async def _maybe_autosubmit(wid: int, fields_filled: int, label: str) -> bool:
-    """
-    Auto-submit only if ALL of these hold:
-      - toggles.auto_submit enabled AND dry_run off
-      - at least 3 profile fields were pre-filled (form actually engaged)
-      - exactly one plausible submit button is visible and not denylisted
-    Any ambiguity → no click. Returns True if submitted.
-    """
-    if not config.enabled("auto_submit") or config.dry_run():
-        return False
-
-    if fields_filled < 3:
-        print(f"[auto] {label}: only {fields_filled} field(s) filled — "
-              f"NOT submitting (sanity check failed).")
-        return False
-
+async def _submit_candidates(wid: int) -> list[str] | None:
+    """Visible, enabled, non-denylisted submit buttons. None on error."""
     try:
         out = await asyncio.to_thread(safari.js, wid, f"""(() => {{
           const sels = {json.dumps(", ".join(_SUBMIT_SELECTORS))};
@@ -432,8 +465,106 @@ async def _maybe_autosubmit(wid: int, fields_filled: int, label: str) -> bool:
           }});
           return JSON.stringify(found);
         }})()""")
-        candidates = json.loads(out)
+        return json.loads(out)
     except (RuntimeError, json.JSONDecodeError):
+        return None
+
+
+async def _click_submit(wid: int) -> bool:
+    try:
+        await asyncio.sleep(random.uniform(1.5, 3.0))
+        out = (await asyncio.to_thread(safari.js, wid, """(() => {
+          const el = document.getElementById("auto-submit-candidate");
+          if (el) { el.click(); return "clicked"; }
+          return "miss";
+        })()""")).strip().strip('"')
+        await asyncio.sleep(4)
+        return out == "clicked"
+    except RuntimeError:
+        return False
+
+
+async def _dialog_submit(wid: int, job: Job, fields_filled: int,
+                         label: str) -> bool:
+    """
+    Bot-does-all gate: ONE native popup. Yes → sanity-checked submit.
+    Requires exactly one plausible submit button; any ambiguity or
+    thin prefill → no popup, returns False (window stays for human).
+    """
+    if fields_filled < 3:
+        print(f"[auto] {label}: only {fields_filled} field(s) filled — "
+              f"needs human, leaving window open.")
+        return False
+
+    candidates = await _submit_candidates(wid)
+    if not candidates:
+        print(f"[auto] {label}: submit button not found — needs human.")
+        return False
+    if len(candidates) != 1:
+        print(f"[auto] {label}: {len(candidates)} submit candidates "
+              f"(ambiguous) — needs human.")
+        return False
+
+    question = (f"Submit application?\n{job.title}\n{job.company}\n"
+                f"{fields_filled} fields prefilled, docs attached.")
+    try:
+        yes = await asyncio.to_thread(
+            safari.dialog_yes_no, f"Apply: {job.company}", question)
+    except RuntimeError:
+        return False
+    if not yes:
+        print(f"[auto] {label}: skipped by user.")
+        return False
+
+    print(f"[auto] {label}: YES — clicking '{candidates[0]}'...")
+    if not await _click_submit(wid):
+        print(f"[auto] {label}: submit click failed.")
+        return False
+    await asyncio.sleep(3)
+    try:
+        verdict = (await asyncio.to_thread(safari.js, wid, """(() => {
+          const t = ((document.body && document.body.innerText) || "")
+            .toLowerCase();
+          const bad = ["required", "invalid", "missing", "error",
+            "please complete", "please correct", "unsuccessful"];
+          if (bad.some(k => t.indexOf(k) !== -1)) return "errors";
+          const good = ["thank you", "received", "submitted", "confirmation",
+            "successfully", "reference number"];
+          if (good.some(k => t.indexOf(k) !== -1)) return "confirmed";
+          return "unknown";
+        })()""")).strip().strip('"')
+    except RuntimeError:
+        return False
+    if verdict == "confirmed":
+        print(f"[auto] {label}: confirmation detected — submitted.")
+        return True
+    if verdict == "errors":
+        print(f"[auto] {label}: form shows validation errors — "
+              f"leaving window open for human.")
+        return False
+    print(f"[auto] {label}: clicked, no clear confirmation — "
+          f"leaving window open to verify.")
+    return False
+
+
+async def _maybe_autosubmit(wid: int, fields_filled: int, label: str) -> bool:
+    """
+    Auto-submit only if ALL of these hold:
+      - toggles.auto_submit enabled AND dry_run off
+      - at least 3 profile fields were pre-filled (form actually engaged)
+      - exactly one plausible submit button is visible and not denylisted
+    Any ambiguity → no click. Returns True if submitted.
+    """
+    if not config.enabled("auto_submit") or config.dry_run():
+        return False
+
+    if fields_filled < 3:
+        print(f"[auto] {label}: only {fields_filled} field(s) filled — "
+              f"NOT submitting (sanity check failed).")
+        return False
+
+    candidates = await _submit_candidates(wid)
+    if candidates is None:
         return False
 
     if len(candidates) != 1:
@@ -443,17 +574,9 @@ async def _maybe_autosubmit(wid: int, fields_filled: int, label: str) -> bool:
 
     print(f"[auto] {label}: sanity checks passed — "
           f"clicking '{candidates[0]}'...")
-    try:
-        await asyncio.sleep(random.uniform(1.5, 3.0))
-        await asyncio.to_thread(safari.js, wid, """(() => {
-          const el = document.getElementById("auto-submit-candidate");
-          if (el) { el.click(); return "clicked"; }
-          return "miss";
-        })()""")
-        await asyncio.sleep(4)
-        print(f"[auto] {label}: clicked submit. VERIFY the confirmation "
-              f"page before closing.")
-        return True
-    except RuntimeError as e:
-        print(f"[auto] {label}: submit click failed ({e}).")
+    if not await _click_submit(wid):
+        print(f"[auto] {label}: submit click failed.")
         return False
+    print(f"[auto] {label}: clicked submit. VERIFY the confirmation "
+          f"page before closing.")
+    return True

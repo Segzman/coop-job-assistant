@@ -388,10 +388,15 @@ async def _cmd_apply_batch_inner(args: argparse.Namespace, jobs: dict,
         try:
             resume_path = latest_pdf_for(job.id)
             cover_path = latest_cover_for(job.id)
-            await open_and_prefill(job, resume_path, cover_path)
+            submitted = await open_and_prefill(job, resume_path, cover_path,
+                                               auto=True)
         except Exception as e:
             console.print(f"[red]Browser error on {job.id}: {e} "
                           f"— left as seen.[/]")
+            continue
+        if not submitted:
+            console.print(f"[yellow]{job.company}: window closed before "
+                          f"submit — left as seen.[/]")
             continue
         update_status(job.id, "applied")
         done += 1
