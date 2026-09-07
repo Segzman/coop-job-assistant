@@ -218,6 +218,10 @@ async def _select_package_docs(wid: int, resume_name: str,
           const sels = [...document.querySelectorAll("select")]
             .filter(e => e.offsetParent !== null);
           const log = [];
+          const ctxText = (s) => {{
+            const c = s.closest("tr,div");
+            return c ? (c.innerText || "") : "";
+          }};
           for (const s of sels) {{
             const opts = [...s.options];
             const isTranscript = opts.some(o =>
@@ -227,8 +231,7 @@ async def _select_package_docs(wid: int, resume_name: str,
               continue;
             }}
             const label = (/cover/i.test(s.name || "") ||
-              /cover/i.test((s.closest("tr,div") || {}).innerText ||
-                "")) ? "cover" : "resume";
+              /cover/i.test(ctxText(s))) ? "cover" : "resume";
             const hit = opts.find(o =>
               (o.text || "").indexOf(want[label]) === 0);
             if (hit) {{
