@@ -29,6 +29,15 @@ resume. Write a complete cover letter for THIS job:
 HARD RULES:
 - Never invent experience, employers, dates, degrees, or skills.
 - Never invent project URLs. Keep header contact lines factual.
+- NEVER emit placeholders like {{DATE}} — fill every field. Use the
+  TODAY date supplied in the prompt.
+- NEVER use em-dashes (—) or en-dashes (–); use commas or colons.
+- NEVER use these words: leverage, delve, cutting-edge, tapestry,
+  landscape, realm, pivotal, seamless, robust, crucial, vibrant, foster,
+  holistic, synergy, testament, delve, utilize, meticulous,
+  detail-oriented, fast-paced, ever-evolving, game-changer.
+- Prefer short concrete sentences over adjectives. State facts
+  (built X with Y, N months) instead of claims (proven expertise in Z).
 - Output ONLY the letter in Markdown, no commentary."""
 
 
@@ -95,6 +104,7 @@ def cover_letter(job, resume_md: str = "") -> Path | None:
 
     description = job.description or f"{job.title} at {job.company}"
     prompt = (
+        f"# TODAY\n{date.today().isoformat()}\n\n"
         f"# JOB POSTING\n{job.title} — {job.company} "
         f"({job.location or 'location n/a'})\n\n{description}\n\n"
         f"# RESUME\n{resume_md}\n\n"

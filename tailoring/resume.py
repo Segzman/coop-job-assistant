@@ -37,6 +37,14 @@ HARD RULES:
 - Never invent experience, employers, dates, degrees, or skills.
 - Never invent project URLs or attach a URL to the wrong project.
 - Never remove factual content; only reorder/reword/emphasize.
+- Keep project descriptions close to the master's wording; never add
+  capabilities the master doesn't state (no "secure", "robust",
+  "enterprise" unless present).
+- NEVER use em-dashes (—) or en-dashes (–); use commas or colons.
+- NEVER use these words: leverage, delve, cutting-edge, tapestry,
+  landscape, realm, pivotal, seamless, robust, crucial, vibrant, foster,
+  holistic, synergy, testament, utilize, meticulous, detail-oriented,
+  fast-paced, ever-evolving, game-changer, team player, self-starter.
 - Keep the same overall Markdown structure (name header, sections).
 - Output ONLY the resume Markdown, no commentary."""
 
