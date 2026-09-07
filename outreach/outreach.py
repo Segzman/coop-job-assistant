@@ -34,14 +34,15 @@ SYSTEM_PROMPT = """\
 You write short LinkedIn outreach from a college student seeking a
 co-op placement. Two formats (follow the requested one exactly):
 
-MESSAGE (2 sentences, plain text, no subject line):
+MESSAGE (exactly ONE message: 2 sentences, then sign-off block):
 - Sentence 1: mention applying to the specific role at their company
   and one genuine, specific point of fit.
 - Sentence 2: a low-pressure ask (15-min chat or being kept in mind).
+- Then a blank line, "Kind regards,", "Sekun" on their own lines.
 
-CONNECT NOTE (max 280 characters TOTAL, hard limit):
-- One breath: who you are, the role you applied for, one fit point.
-- No ask beyond connecting.
+CONNECT NOTE (STRICTLY under 240 characters, no greeting issues):
+- "Hi {FirstName}," + who you are + the role you applied for + one
+  fit point. No question, no ask, NO sign-off.
 
 STYLE (match the candidate's voice):
 - Warm peer-review tone: specific compliment first, direct second.
@@ -50,6 +51,8 @@ STYLE (match the candidate's voice):
   No sign-off for CONNECT NOTE.
 HARD RULES:
 - Zero fluff, no emojis, no "I hope this finds you well".
+- If no applied role is given in context, say only "a co-op placement"
+  at the company. NEVER invent a role title, courses, or skills.
 - NEVER use em-dashes (—) or en-dashes (–).
 - NEVER use: leverage, delve, cutting-edge, tapestry, landscape,
   realm, pivotal, seamless, robust, crucial, vibrant, foster,
@@ -94,7 +97,8 @@ def _context_for(recruiter: dict, jobs: dict[str, "Job"]) -> str:
                 f"(job id {j.id}). Student: software development co-op "
                 f"student at Sheridan College.")
     return (f"Recruiter: {recruiter['name']}, {recruiter.get('title', '')} "
-            f"at {recruiter['company']}.")
+            f"at {recruiter['company']}.\n"
+            f"NO APPLIED ROLE ON FILE — refer only to 'a co-op placement'.")
 
 
 def _voice() -> str:
@@ -106,8 +110,12 @@ def _voice() -> str:
 
 
 def _fit_note(note: str) -> str:
-    """Hard-enforce the connect-note character limit at a word boundary."""
-    note = note.strip()
+    """Strip sign-offs, hard-enforce the character limit at a boundary."""
+    import re
+    note = re.sub(r"\n*\s*Kind regards,?\s*\n\s*\S+.*$", "", note.strip(),
+                  flags=re.IGNORECASE | re.DOTALL).strip()
+    # keep first message only if the model emitted variants
+    note = re.split(r"\n\s*\n", note)[0].strip()
     if len(note) <= CONNECT_NOTE_MAX:
         return note
     cut = note[:CONNECT_NOTE_MAX].rsplit(" ", 1)[0]
