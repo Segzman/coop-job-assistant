@@ -53,6 +53,9 @@ HARD RULES:
 - Zero fluff, no emojis, no "I hope this finds you well".
 - If no applied role is given in context, say only "a co-op placement"
   at the company. NEVER invent a role title, courses, or skills.
+- Use the recruiter's actual first name from context. NEVER emit
+  placeholders like {FirstName}, {Name}, [Name].
+- Output exactly ONE message, nothing else.
 - NEVER use em-dashes (—) or en-dashes (–).
 - NEVER use: leverage, delve, cutting-edge, tapestry, landscape,
   realm, pivotal, seamless, robust, crucial, vibrant, foster,
@@ -86,6 +89,13 @@ def _llm(prompt: str) -> str | None:
 
 def _context_for(recruiter: dict, jobs: dict[str, "Job"]) -> str:
     """Applied job at this recruiter's company, for personalization."""
+    base = ("Student: Oluwasekunayo (Sekun) Faseyi, 3rd-year Computer "
+            "Science (Mobile Computing) co-op student at Sheridan College. "
+            "Skills: C#, Python, Java, Kotlin, SQL, .NET MAUI, MongoDB. "
+            "Projects: Room Booking app (.NET MAUI, "
+            "github.com/sekunf/RoomBookingApplication), Weather app "
+            "(Kotlin + OpenWeather API, github.com/sekunf/ASSIGNMENT3). "
+            "Draw fit points ONLY from this profile.")
     matches = [
         j for j in jobs.values()
         if j.company == recruiter.get("company") and j.status == "applied"
@@ -94,11 +104,11 @@ def _context_for(recruiter: dict, jobs: dict[str, "Job"]) -> str:
         j = matches[0]
         return (f"Recruiter: {recruiter['name']}, {recruiter.get('title', '')} "
                 f"at {recruiter['company']}.\nApplied role: {j.title} "
-                f"(job id {j.id}). Student: software development co-op "
-                f"student at Sheridan College.")
+                f"(job id {j.id}). {base}")
     return (f"Recruiter: {recruiter['name']}, {recruiter.get('title', '')} "
             f"at {recruiter['company']}.\n"
-            f"NO APPLIED ROLE ON FILE — refer only to 'a co-op placement'.")
+            f"NO APPLIED ROLE ON FILE — refer only to 'a co-op placement'. "
+            f"{base}")
 
 
 def _voice() -> str:

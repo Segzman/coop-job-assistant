@@ -4,7 +4,7 @@ toggles:
   auto_apply: false
   auto_submit: false
   linkedin_collect: true
-  linkedin_drafts: false
+  linkedin_drafts: true
   linkedin_autosend: false
   linkedin_connect: false
   slate_collect: true
