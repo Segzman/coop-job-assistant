@@ -1,15 +1,13 @@
 """
-LinkedIn recruiter collector — real Safari via AppleScript.
+LinkedIn recruiter finder — real Safari via AppleScript.
 
-For companies you've APPLIED to, opens LinkedIn people search for
-"<company> recruiter", scrapes the first page of results (name, title,
-profile URL) into data/recruiters.json.
+Finds actual hiring people (not just names): people-search per company
+with query variants, title filtering (recruiters / talent / campus only),
+saved into data/recruiters.json ready for drafts + invites.
 
-Posture: real Safari window, one page per company, slow pacing, hard cap
-of 5 companies per run. Login wall / checkpoint → pauses for YOU in the
-visible window, then continues.
-
-Toggle: config.yaml -> toggles.linkedin_collect  (default OFF)
+Sources: applied jobs by default; --company NAME targets anyone;
+--wider includes seen/new jobs. Posture: one Safari window, slow
+pacing, hard cap of 5 companies per run.
 """
 from __future__ import annotations
 
@@ -17,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import random
+import re
 from datetime import datetime
 
 from browser import safari_bridge as safari
@@ -27,6 +26,26 @@ from storage.recruiters import upsert
 
 MAX_COMPANIES_PER_RUN = 5      # hard cap regardless of config
 RESULTS_PER_SEARCH = 5
+
+# Only these titles are worth messaging. Everyone else is a skip.
+TITLE_KEEP = re.compile(
+    r"recruit|talent acquisition|sourc|talent|campus|"
+    r"university relations|early careers|early talent|\bhiring\b|"
+    r"\bpeople\b",
+    re.IGNORECASE,
+)
+
+QUERIES = ["{c} recruiter"]
+QUERIES_DEEP = ["{c} recruiter", "{c} campus recruiter",
+                "{c} talent acquisition"]
+
+
+def _pause(msg: str) -> None:
+    """Enter-prompt that degrades gracefully without a tty."""
+    try:
+        input(msg)
+    except (EOFError, KeyboardInterrupt):
+        print("(no terminal — continuing)")
 
 SEARCH_JS = """(() => JSON.stringify(
   [...document.querySelectorAll(
@@ -55,6 +74,18 @@ def _companies_with_applied_jobs() -> list[str]:
     return sorted(companies)
 
 
+def _companies_wide() -> list[str]:
+    """Applied first, then seen/new — for connecting ahead of applying."""
+    jobs = load_jobs()
+    rank = {"applied": 0, "seen": 1, "new": 2}
+    best: dict[str, int] = {}
+    for j in jobs.values():
+        if not j.company or j.status not in rank:
+            continue
+        best[j.company] = min(best.get(j.company, 9), rank[j.status])
+    return sorted(best, key=lambda c: (best[c], c))
+
+
 class LinkedInCollector(BaseScraper):
 
     async def scrape(self) -> None:  # keep BaseScraper interface
@@ -67,24 +98,31 @@ class LinkedInCollector(BaseScraper):
             return ""
 
 
-async def collect() -> None:
+async def collect(companies: list[str] | None = None,
+                  deep: bool = False) -> None:
     if not config.enabled("linkedin_collect"):
         print("[li] linkedin_collect is OFF — enable it in config.yaml")
         return
 
-    if config.dry_run():
-        companies = _companies_with_applied_jobs()
+    queries = QUERIES_DEEP if deep else QUERIES
+
+    if companies:
+        targets = companies[:MAX_COMPANIES_PER_RUN]
+    elif config.dry_run():
+        targets = _companies_with_applied_jobs()
         print(f"[li] DRY RUN — would search recruiters at "
-              f"{len(companies)} compan(ies): {', '.join(companies) or '(none)'}")
+              f"{len(targets)} compan(ies): {', '.join(targets) or '(none)'}")
         return
+    else:
+        targets = _companies_with_applied_jobs()[:MAX_COMPANIES_PER_RUN]
+        if not targets:
+            print("[li] No applied Sheridan jobs yet — apply first, or pass "
+                  "--company NAME / --wider.")
+            return
 
-    companies = _companies_with_applied_jobs()[:MAX_COMPANIES_PER_RUN]
-    if not companies:
-        print("[li] No applied Sheridan jobs yet — apply first.")
-        return
-
-    print(f"[li] Searching recruiters at {len(companies)} compan(ies): "
-          f"{', '.join(companies)}")
+    print(f"[li] Searching recruiters at {len(targets)} compan(ies): "
+          f"{', '.join(targets)}"
+          + (" [deep: 3 queries each]" if deep else ""))
 
     wid = await asyncio.to_thread(
         safari.open_window, "https://www.linkedin.com/feed/")
@@ -95,34 +133,37 @@ async def collect() -> None:
         except RuntimeError:
             url = ""
         if "/login" in url or "checkpoint" in url:
-            input("[li] LinkedIn wants login. Sign in in the Safari "
-                  "window, then press Enter... ")
+            _pause("[li] LinkedIn wants login. Sign in in the Safari "
+                   "window, then press Enter... ")
 
-        for company in companies:
-            url = (
-                "https://www.linkedin.com/search/results/people/"
-                f"?keywords={company.replace(' ', '%20')}%20recruiter"
-                "&origin=GLOBAL_SEARCH_HEADER"
-            )
-            print(f"\n[li] ▶ {company}: {url}")
-            await asyncio.to_thread(safari.goto, wid, url)
-            await asyncio.sleep(random.uniform(4, 7))
-
-            try:
-                cur = await asyncio.to_thread(safari.current_url, wid)
-            except RuntimeError:
-                cur = ""
-            if "/login" in cur or "checkpoint" in cur:
-                input("[li] Login/checkpoint detected. Resolve it in the "
-                      "Safari window, then press Enter... ")
+        for company in targets:
+            for qi, q in enumerate(queries):
+                url = (
+                    "https://www.linkedin.com/search/results/people/"
+                    f"?keywords={q.format(c=company).replace(' ', '%20')}"
+                    "&origin=GLOBAL_SEARCH_HEADER"
+                )
+                print(f"\n[li] ▶ {company} [{qi + 1}/{len(queries)}]: "
+                      f"{q.format(c=company)}")
                 await asyncio.to_thread(safari.goto, wid, url)
                 await asyncio.sleep(random.uniform(4, 7))
 
-            found = await _scrape_results(wid, company)
-            print(f"[li] {company}: saved {found} recruiter(s)")
-            await asyncio.sleep(random.uniform(8, 20))  # slow pacing
+                try:
+                    cur = await asyncio.to_thread(safari.current_url, wid)
+                except RuntimeError:
+                    cur = ""
+                if "/login" in cur or "checkpoint" in cur:
+                    _pause("[li] Login/checkpoint detected. Resolve it in "
+                           "the Safari window, then press Enter... ")
+                    await asyncio.to_thread(safari.goto, wid, url)
+                    await asyncio.sleep(random.uniform(4, 7))
+
+                found = await _scrape_results(wid, company)
+                print(f"[li] {company}: saved {found} recruiter(s)")
+                await asyncio.sleep(random.uniform(8, 20))  # slow pacing
     finally:
-        input("\n[li] Done collecting. Press Enter to close Safari window... ")
+        _pause("\n[li] Done collecting. Press Enter to close Safari "
+               "window... ")
         await asyncio.to_thread(safari.close_window, wid)
 
 
@@ -143,6 +184,8 @@ async def _scrape_results(wid: int, company: str) -> int:
             title = (card.get("title") or "").strip()
             if not profile_url or not name:
                 continue
+            if not TITLE_KEEP.search(title):
+                continue  # not a hiring role — skip
             r_id = hashlib.sha256(profile_url.encode()).hexdigest()[:12]
             upsert(r_id, {
                 "name": name,

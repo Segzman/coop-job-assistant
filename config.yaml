@@ -3,7 +3,7 @@ toggles:
   resume_tailoring: true
   auto_apply: false
   auto_submit: false
-  linkedin_collect: false
+  linkedin_collect: true
   linkedin_drafts: false
   linkedin_autosend: false
   linkedin_connect: false

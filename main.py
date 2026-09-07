@@ -542,8 +542,13 @@ def cmd_cover(args: argparse.Namespace) -> None:
 
 
 def cmd_linkedin_collect(args: argparse.Namespace) -> None:
-    from scrapers.linkedin import collect
-    asyncio.run(collect())
+    from scrapers.linkedin import collect, _companies_wide
+    companies = getattr(args, "company", None) or None
+    if not companies and getattr(args, "wider", False):
+        from scrapers.linkedin import MAX_COMPANIES_PER_RUN
+        companies = _companies_wide()[:MAX_COMPANIES_PER_RUN]
+    asyncio.run(collect(companies=companies,
+                        deep=getattr(args, "deep", False)))
 
 
 def cmd_slate_collect(args: argparse.Namespace) -> None:
@@ -815,10 +820,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_cover.add_argument("job_id", help="Job ID from the list command")
 
     # linkedin-collect
-    sub.add_parser(
+    p_lic = sub.add_parser(
         "linkedin-collect",
-        help="Scrape recruiters at companies you applied to (gated by toggles)",
+        help="Find recruiters at companies (gated by toggles)",
     )
+    p_lic.add_argument("--company", action="append", default=[],
+                       help="Target a company directly (repeatable)")
+    p_lic.add_argument("--wider", action="store_true",
+                       help="Include seen/new companies, applied first")
+    p_lic.add_argument("--deep", action="store_true",
+                       help="3 query variants per company (slower)")
 
     # slate-collect
     sub.add_parser(
