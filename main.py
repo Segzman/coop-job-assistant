@@ -332,7 +332,7 @@ async def cmd_apply_batch(args: argparse.Namespace) -> None:
         f"close window → next opens. Auto-marks applied.",
         title="[bold cyan]apply-batch[/]", expand=False))
     print_job_table(candidates)
-    if not Confirm.ask(
+    if not getattr(args, "yes", False) and not Confirm.ask(
         f"\nApply to all {total} jobs ({ready} bespoke resumes)?",
         default=True,
     ):
@@ -640,6 +640,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["sheridan", "indeed", "all"],
         default="all",
         help="Platform to batch-apply to (default: all)",
+    )
+    p_batch.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the batch confirm (for driver shells without stdin).",
     )
     p_batch.add_argument(
         "--max",
