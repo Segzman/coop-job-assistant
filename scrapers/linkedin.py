@@ -47,22 +47,33 @@ def _pause(msg: str) -> None:
     except (EOFError, KeyboardInterrupt):
         print("(no terminal — continuing)")
 
-SEARCH_JS = """(() => JSON.stringify(
-  [...document.querySelectorAll(
-    "div.entity-result, li.reusable-search__result-container")]
-    .slice(0, __N__)
-    .map(card => {
-      const a = card.querySelector("a.app-aware-link[href*='/in/']");
-      const n = card.querySelector(
-        ".entity-result__title-text a span[aria-hidden='true'], " +
-        ".entity-result__title-line span[aria-hidden='true']");
-      const t = card.querySelector(".entity-result__primary-subtitle");
-      return {
-        url: a ? (a.getAttribute("href") || "").split("?")[0] : "",
-        name: n ? n.innerText.trim() : "",
-        title: t ? t.innerText.trim() : "",
-      };
-    })))()"""
+SEARCH_JS = """(() => {
+  const seen = {};
+  const out = [];
+  document.querySelectorAll("a[href*='/in/']").forEach(a => {
+    const href = (a.getAttribute("href") || "").split("?")[0];
+    if (!href || !/^https:\\/\\/www\\.linkedin\\.com\\/in\\/[\\w-]+\\/?$/.test(href)) return;
+    if (seen[href]) return;
+    seen[href] = 1;
+    let block = a;
+    for (let i = 0; i < 6 && block; i++) {
+      const t = (block.innerText || "").replace(/\\s+/g, " ").trim();
+      if (t.length > 30) {
+        const parts = t.split("•");
+        let name = (parts[0] || "").trim();
+        let rest = parts.slice(1).join(" ").trim()
+          .replace(/^(1st|2nd|3rd\\+?)\\s*/, "");
+        const title = rest.split("|")[0].trim().slice(0, 120);
+        if (name && title) {
+          out.push({url: href, name: name.slice(0, 80), title});
+          break;
+        }
+      }
+      block = block.parentElement;
+    }
+  });
+  return JSON.stringify(out.slice(0, __N__));
+})()"""
 
 
 def _companies_with_applied_jobs() -> list[str]:
