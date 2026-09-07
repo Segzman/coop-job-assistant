@@ -151,14 +151,30 @@ async def open_and_prefill(job: Job, resume_path: Path | None = None,
               if (a) { a.click(); return "clicked"; }
               return "miss";
             })()""")
-            if await _poll_present(
+            if not await _poll_present(
                     wid, [f".np-apply-btn-{posting_id}"], 15):
-                await asyncio.to_thread(safari.js, wid, f"""(() => {{
-                  document.querySelector(".np-apply-btn-{posting_id}").click();
-                  return "clicked";
-                }})()""")
-                await asyncio.sleep(4)
-                print(f"[apply] Opened posting {posting_id} in Sheridan Works.")
+                print(f"[apply] Posting {posting_id} not in results — "
+                      f"skipping.")
+                await asyncio.to_thread(safari.close_window, wid)
+                return False
+            # Click INTO the posting → application view loads.
+            await asyncio.to_thread(safari.js, wid, f"""(() => {{
+              document.querySelector(".np-apply-btn-{posting_id}").click();
+              return "clicked";
+            }})()""")
+            print(f"[apply] Opened posting {posting_id}, "
+                  f"waiting for application view...")
+            if not await _poll_present(wid, [
+                    "input[type='file']",
+                    "input:not([type='hidden']):not([type='submit'])"
+                    ":not([type='button']):not([type='checkbox'])"
+                    ":not([type='radio']):not([type='file'])",
+                    "textarea", "select",
+                    "button[type='submit']", "input[type='submit']",
+            ], 20):
+                print("[apply] Application view never loaded — skipping.")
+                await asyncio.to_thread(safari.close_window, wid)
+                return False
             detected_external = await _find_external_link(wid)
             if detected_external:
                 print(f"[apply] Auto-detected external link: {detected_external}")
